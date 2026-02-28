@@ -1,7 +1,7 @@
 import express from "express";
 const router = express.Router();
 import * as adminCtrl from "./admin.controller.js";
-import { protect, isAdmin } from "../middlewares/auth.middleware.js"; // Add isAdmin middleware if needed
+import { protect, isAdmin } from "../../middlewares/auth.middleware.js"; // Add isAdmin middleware if needed
 
 router.use(protect, isAdmin); // Protect all admin routes
 
