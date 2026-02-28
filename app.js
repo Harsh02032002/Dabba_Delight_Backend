@@ -9,6 +9,7 @@ import userRoutes from "./modules/user/user.routes.js";
 import userPublicRoutes from "./modules/user/user.public.routes.js";
 import notificationRoutes from "./modules/notification/notification.routes.js";
 import paymentRoutes from "./modules/payment/payment.routes.js";
+import adminRoutes from "./modules/admin/admin.routes.js";
 import path from "path";
 
 const app = express();
@@ -51,7 +52,7 @@ app.use("/api/user", userPublicRoutes);
 app.use("/api/notifications", notificationRoutes);
 // Payment (Stripe & Razorpay)
 app.use("/api/payments", paymentRoutes);
-
+app.use("/api/admin", adminRoutes);
 // Static files (uploads folder)
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
