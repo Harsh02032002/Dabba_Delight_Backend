@@ -9,6 +9,7 @@ connectDB();
 const server = http.createServer(app);
 initSocket(server);
 
-server.listen(ENV.PORT, () =>
+server.listen(ENV.PORT,"0.0.0.0", () =>
   console.log(`Server running on port ${ENV.PORT}`),
 );
+

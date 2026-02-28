@@ -12,6 +12,10 @@ import paymentRoutes from "./modules/payment/payment.routes.js";
 import path from "path";
 
 const app = express();
+app.get("/", (req, res) => {
+  res.send("Dabba Nation Backend Running 🚀");
+});
+
 
 // ------------------ CORS SETUP ------------------
 app.use(
@@ -20,6 +24,7 @@ app.use(
       "http://localhost:8080", // tera frontend port (jo tune bola)
       "http://localhost:5173", // default Vite port (safety ke liye)
       "http://localhost:3000", // agar kabhi Create React App use kiya to
+      "http://56.228.4.127",
     ],
     credentials: true, // cookies / auth headers ke liye
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
