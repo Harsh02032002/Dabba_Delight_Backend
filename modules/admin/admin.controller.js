@@ -4,11 +4,11 @@ import Product from "../product/product.model.js";
 import Cart from "../cart/cart.model.js";
 import Analytics from "../analytics/analytics.model.js";
 import Settlement from "../settlement/settlement.model.js";
-import Config from "../config/config.model.js";
+//import Config from "../config/config.model.js";
 import MarketingCampaign from "../marketing/marketingCampaign.model.js";
-import AuditLog from "../auditlog/auditlog.model.js";
-import Dispute from "../dispute/dispute.model.js";
-import Category from "../category/category.model.js";
+//import AuditLog from "../auditlog/auditlog.model.js";
+//import Dispute from "../dispute/dispute.model.js";
+//import Category from "../category/category.model.js";
 import mongoose from "mongoose";
 import { getIO } from "../../socket.js";
 
@@ -249,6 +249,36 @@ export const blockUser = async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     sendError(res, 400, "Block failed", err);
+  }
+};
+export const unblockUser = async (req, res) => {
+  try {
+    const user = await User.findByIdAndUpdate(
+      req.params.id,
+      { isBlocked: false },
+      { new: true }
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    await AuditLog.create({
+      adminId: req.user._id,
+      action: "unblocked user",
+      targetId: req.params.id,
+    });
+
+    res.json({
+      success: true,
+      message: "User unblocked successfully",
+      user,
+    });
+  } catch (err) {
+    sendError(res, 400, "Unblock failed", err);
   }
 };
 export const getOrders = async (req, res) => {

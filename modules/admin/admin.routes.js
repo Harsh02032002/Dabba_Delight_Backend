@@ -35,13 +35,13 @@ router.post("/users/:id/unblock", adminCtrl.unblockUser);
 router.get("/orders", adminCtrl.getOrders);
 router.post("/orders/:id/refund", adminCtrl.refundOrder);
 
-// Commission
+/* Commission
 router.get("/commission", adminCtrl.getCommissionConfig);
-router.put("/commission", adminCtrl.updateCommissionConfig);
+router.put("/commission", adminCtrl.updateCommissionConfig);*/
 
-// GST
+/* GST
 router.get("/gst", adminCtrl.getGSTConfig);
-router.put("/gst", adminCtrl.updateGSTConfig);
+router.put("/gst", adminCtrl.updateGSTConfig);*/
 
 // Referrals
 router.get("/referrals", adminCtrl.getReferrals);
@@ -55,16 +55,16 @@ router.post("/marketing/campaigns", adminCtrl.createCampaign);
 router.get("/config", adminCtrl.getPlatformConfig);
 router.put("/config", adminCtrl.updatePlatformConfig);
 
-// New: Disputes
+/*New: Disputes
 router.get("/disputes", adminCtrl.getDisputes);
-router.post("/disputes/:id/resolve", adminCtrl.resolveDispute);
+router.post("/disputes/:id/resolve", adminCtrl.resolveDispute);*/
 
-// New: Audit Logs
-router.get("/audit-logs", adminCtrl.getAuditLogs);
+/*New: Audit Logs
+router.get("/audit-logs", adminCtrl.getAuditLogs);*/
 
-// New: Categories
+/* New: Categories
 router.get("/categories", adminCtrl.getCategories);
 router.post("/categories", adminCtrl.createCategory);
-router.delete("/categories/:id", adminCtrl.deleteCategory);
+router.delete("/categories/:id", adminCtrl.deleteCategory);*/
 
 export default router;
