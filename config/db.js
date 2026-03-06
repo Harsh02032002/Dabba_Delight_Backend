@@ -1,7 +1,5 @@
-import mongoose from "mongoose";
-import dns from "dns";
-import { ENV } from "./env.js";
-
+const mongoose = require('mongoose');
+const dns =require("dns");
 // If Node is using a local resolver (127.0.0.1) that is not responding,
 // SRV lookups (used by mongodb+srv) will fail with ECONNREFUSED.
 // Fall back to public DNS servers so the driver can resolve Atlas SRV records.
@@ -13,12 +11,14 @@ if (currentServers && currentServers.includes("127.0.0.1")) {
   dns.setServers(["8.8.8.8", "8.8.4.4"]);
 }
 
-export const connectDB = async () => {
+const connectDB = async () => {
   try {
-    await mongoose.connect(ENV.MONGO_URI);
-    console.log("MongoDB Connected");
+    const conn = await mongoose.connect(process.env.MONGO_URI);
+    console.log(`✅ MongoDB connected: ${conn.connection.host}`);
   } catch (err) {
-    console.error("DB Error", err.message);
+    console.error('❌ MongoDB connection error:', err.message);
     process.exit(1);
   }
 };
+
+module.exports = connectDB;

@@ -1,33 +1,30 @@
 {
-  "name": "dd_backend",
+  "name": "dabba-nation-backend",
   "version": "1.0.0",
-  "type": "module",
+  "description": "Dabba Nation - Food Delivery Platform Backend",
   "main": "server.js",
+  "type": "commonjs",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "seed:admin": "node scripts/seedAdmin.js"
+    "seed": "node seed.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.995.0",
-    "bcryptjs": "^3.0.3",
-    "cors": "^2.8.6",
-    "csv-parser": "^3.2.0",
-    "dotenv": "^17.2.4",
-    "express": "^5.2.1",
-    "jsonwebtoken": "^9.0.3",
-    "mongoose": "^9.1.6",
-    "multer": "^2.0.2",
+    "@aws-sdk/client-s3": "^3.1000.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.7.0",
+    "multer": "^1.4.5-lts.1",
     "nodemailer": "^8.0.1",
-    "nodemon": "^3.1.11",
-    "openai": "^6.21.0",
-    "razorpay": "^2.9.6",
-    "socket.io": "^4.8.3",
-    "stripe": "^20.3.1",
-    "twilio": "^5.12.1"
+    "pdfkit": "^0.15.0",
+    "razorpay": "^2.9.4",
+    "socket.io": "^4.8.0",
+    "stripe": "^17.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.7"
   }
 }
