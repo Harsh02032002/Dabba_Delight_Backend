@@ -8,6 +8,7 @@ const userSchema = new mongoose.Schema({
   phone: { type: String, trim: true },
   role: { type: String, enum: ['user', 'seller', 'admin'], default: 'user' },
   avatar: String,
+  banner: String,
   wallet: { type: Number, default: 0 },
   loyaltyPoints: { type: Number, default: 0 },
   referralCode: { type: String, unique: true, sparse: true },

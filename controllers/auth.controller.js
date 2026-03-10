@@ -265,7 +265,7 @@ exports.getProfile = async (req, res) => {
     res.json({
       success: true,
       _id: user._id, name: user.name, email: user.email, role: user.role,
-      phone: user.phone, avatar: user.avatar, wallet: user.wallet,
+      phone: user.phone, avatar: user.avatar, banner: user.banner, wallet: user.wallet,
       referralCode: user.referralCode, isVerified: user.isVerified,
     });
   } catch (err) {
@@ -276,7 +276,7 @@ exports.getProfile = async (req, res) => {
 // PUT /api/auth/profile
 exports.updateProfile = async (req, res) => {
   try {
-    const allowed = ['name', 'phone', 'avatar'];
+    const allowed = ['name', 'phone', 'avatar', 'banner'];
     const updates = {};
     allowed.forEach(k => { if (req.body[k] !== undefined) updates[k] = req.body[k]; });
 
@@ -290,10 +290,29 @@ exports.updateProfile = async (req, res) => {
 // POST /api/auth/profile/avatar
 exports.updateAvatar = async (req, res) => {
   try {
-    const avatarUrl = req.file?.location || req.file?.path;
+    const avatarUrl = req.file?.s3Url || req.file?.location || req.file?.path;
     if (!avatarUrl) return res.status(400).json({ success: false, message: 'No file uploaded' });
     const user = await User.findByIdAndUpdate(req.user._id, { avatar: avatarUrl }, { new: true });
     res.json({ success: true, avatar: user.avatar });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// POST /api/auth/profile/banner
+exports.updateBanner = async (req, res) => {
+  try {
+    const bannerUrl = req.file?.s3Url || req.file?.location || req.file?.path;
+    if (!bannerUrl) return res.status(400).json({ success: false, message: 'No file uploaded' });
+    
+    // Update user banner
+    const user = await User.findByIdAndUpdate(req.user._id, { banner: bannerUrl }, { new: true });
+    
+    // Also update seller profile if user is a seller
+    const Seller = require('../models/Seller');
+    await Seller.findOneAndUpdate({ userId: req.user._id }, { coverImage: bannerUrl }, { new: true });
+    
+    res.json({ success: true, banner: user.banner });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

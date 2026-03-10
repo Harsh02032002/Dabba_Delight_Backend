@@ -431,6 +431,38 @@ exports.changePassword = async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
+// POST /api/seller/profile/logo
+exports.updateLogo = async (req, res) => {
+  try {
+    const logoUrl = req.file?.s3Url || req.file?.location || req.file?.path;
+    if (!logoUrl) return res.status(400).json({ success: false, message: 'No file uploaded' });
+    
+    // Update user avatar and seller logo
+    const User = require('../models/User');
+    await User.findByIdAndUpdate(req.user._id, { avatar: logoUrl });
+    
+    const seller = await Seller.findOneAndUpdate({ userId: req.user._id }, { logo: logoUrl }, { new: true });
+    
+    res.json({ success: true, logo: seller.logo });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// POST /api/seller/profile/cover
+exports.updateCoverImage = async (req, res) => {
+  try {
+    const coverUrl = req.file?.s3Url || req.file?.location || req.file?.path;
+    if (!coverUrl) return res.status(400).json({ success: false, message: 'No file uploaded' });
+    
+    const seller = await Seller.findOneAndUpdate({ userId: req.user._id }, { coverImage: coverUrl }, { new: true });
+    
+    res.json({ success: true, coverImage: seller.coverImage });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 // ─── Support ────────────────────────────────────
 exports.createSupportTicket = async (req, res) => {
   try {

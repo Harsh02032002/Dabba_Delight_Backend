@@ -96,6 +96,18 @@ exports.getMenuItems = async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
+exports.getSellerById = async (req, res) => {
+  try {
+    const seller = await Seller.findById(req.params.id);
+    if (!seller) {
+      return res.status(404).json({ success: false, message: 'Seller not found' });
+    }
+    res.json({ success: true, seller });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 exports.getRecommendations = async (req, res) => {
   try {
     const products = await Product.find({ isAvailable: true, status: 'published' })

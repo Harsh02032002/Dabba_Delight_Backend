@@ -5,6 +5,7 @@ const lc = require('../controllers/location.controller');
 
 // Sellers & Menu (public)
 router.get('/sellers', uc.getSellers);
+router.get('/sellers/:id', uc.getSellerById);
 router.get('/menu', uc.getMenuItems);
 router.get('/recommendations', uc.getRecommendations);
 router.get('/banners', uc.getActiveBanners);
