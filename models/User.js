@@ -24,10 +24,9 @@ const userSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Hash password before save
-userSchema.pre('save', async function (next) {
-  if (!this.isModified('password')) return next();
+userSchema.pre('save', async function () {
+  if (!this.isModified('password')) return;
   this.password = await bcrypt.hash(this.password, 12);
-  next();
 });
 
 // Compare password
@@ -36,11 +35,10 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
 };
 
 // Generate referral code
-userSchema.pre('save', function (next) {
+userSchema.pre('save', function () {
   if (!this.referralCode) {
     this.referralCode = 'DN-' + this._id.toString().slice(-6).toUpperCase();
   }
-  next();
 });
 
 module.exports = mongoose.model('User', userSchema);
