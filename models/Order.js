@@ -51,7 +51,7 @@ const orderSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Auto-generate order number
-orderSchema.pre('save', async function (next) {
+orderSchema.pre('save', async function(next) {
   if (!this.orderNumber) {
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const count = await mongoose.model('Order').countDocuments();
