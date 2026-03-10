@@ -54,6 +54,7 @@ app.use('/api/seller', require('./routes/seller.routes'));
 app.use('/api/seller/profile', require('./routes/seller.profile.routes'));
 app.use('/api/admin', require('./routes/admin.routes'));
 app.use('/api/admin', require('./routes/warehouse.routes'));
+app.use('/api', require('./routes/seed.routes'));
 
 // ─── Health Check ───────────────────────────────────
 app.get('/api/health', (req, res) => {

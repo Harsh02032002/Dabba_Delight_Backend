@@ -1,6 +1,6 @@
 const { Invoice } = require('../models/Others');
 const Order = require('../models/Order');
-const { generateInvoice } = require('../services/invoice.service');
+const { generateInvoice } = require('../services/zomato-invoice.service');
 const fs = require('fs');
 
 // POST /api/invoice/generate/:orderId
