@@ -24,11 +24,17 @@ router.get('/earnings', sellerAuth, sc.getEarnings);
 // Settlements
 router.get('/settlements', sellerAuth, sc.getSettlements);
 
+// Wallet
+router.get('/wallet/transactions', sellerAuth, sc.getWalletTransactions);
+router.post('/wallet/withdraw', sellerAuth, sc.withdrawFromWallet);
+
 // KYC
 router.get('/kyc', sellerAuth, sc.getKYCStatus);
 // Upload KYC documents directly to S3 (field: "document")
 router.post('/kyc/document', sellerAuth, ...s3Upload('document', 'kyc-docs'), sc.uploadKYCDocument);
 router.post('/kyc/submit', sellerAuth, sc.submitKYC);
+router.delete('/kyc/document/:type', sellerAuth, sc.deleteKYCDocument);
+router.put('/kyc/document/:type', sellerAuth, ...s3Upload('document', 'kyc-docs'), sc.updateKYCDocument);
 
 // Referrals
 router.get('/referrals', sellerAuth, sc.getReferrals);

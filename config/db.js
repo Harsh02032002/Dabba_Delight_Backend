@@ -13,11 +13,34 @@ if (currentServers && currentServers.includes("127.0.0.1")) {
 
 const connectDB = async () => {
   try {
-    const conn = await mongoose.connect(process.env.MONGO_URI);
+    // Check if MONGO_URI is defined
+    let mongoUri = process.env.MONGO_URI;
+    
+    if (!mongoUri) {
+      console.log('⚠️  MONGO_URI not found, using fallback URI');
+      // Emergency fallback with correct encoding
+      mongoUri = "mongodb+srv://Harsh:Harsh%402925@cluster0.hddqr9e.mongodb.net/Dabbanation_db?retryWrites=true&w=majority&appName=Cluster0";
+    }
+    
+    // Fix double encoding issue
+    if (mongoUri.includes('Harsh%%402925')) {
+      console.log('🔧 Fixing double-encoded password...');
+      mongoUri = mongoUri.replace('Harsh%%402925', 'Harsh%402925');
+      console.log('✅ Password encoding fixed');
+    }
+    
+    console.log('🔗 Connecting to MongoDB...');
+    console.log('📍 URI length:', mongoUri.length);
+    console.log('🔍 URI preview:', mongoUri.substring(0, 50) + '...');
+    
+    const conn = await mongoose.connect(mongoUri);
     console.log(`✅ MongoDB connected: ${conn.connection.host}`);
+    console.log('🗄️  Database:', conn.connection.name);
   } catch (err) {
     console.error('❌ MongoDB connection error:', err.message);
-    process.exit(1);
+    console.error('Full error:', err);
+    // Don't exit, let server start without DB for now
+    console.log('⚠️  Starting server without database...');
   }
 };
 

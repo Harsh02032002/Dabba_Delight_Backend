@@ -1,12 +1,41 @@
 const crypto = require('crypto');
 const Order = require('../models/Order');
-const { generateInvoice } = require('../services/invoice.service');
+const { generateInvoice } = require('../services/html-invoice.service');
 
 let razorpay;
 try {
   const Razorpay = require('razorpay');
-  razorpay = new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET });
-} catch (e) { console.log('Razorpay not configured'); }
+  
+  // Check if credentials are available
+  const keyId = process.env.RAZORPAY_KEY_ID;
+  const keySecret = process.env.RAZORPAY_KEY_SECRET;
+  
+  console.log('🔧 Razorpay Configuration Check:');
+  console.log('RAZORPAY_KEY_ID defined:', !!keyId);
+  console.log('RAZORPAY_KEY_SECRET defined:', !!keySecret);
+  console.log('RAZORPAY_KEY_ID length:', keyId?.length || 0);
+  console.log('RAZORPAY_KEY_SECRET length:', keySecret?.length || 0);
+  
+  // Use environment variables or fallback
+  const razorpayKeyId = keyId || 'rzp_test_RDG5JVvoKELSk0';
+  const razorpayKeySecret = keySecret || 'N5tamdzyBKMT2E1M2TVR01PT';
+  
+  console.log('🔑 Using Razorpay Key ID:', razorpayKeyId.substring(0, 10) + '...');
+  console.log('🔑 Using Razorpay Secret (length):', razorpayKeySecret.length);
+  
+  razorpay = new Razorpay({ 
+    key_id: razorpayKeyId, 
+    key_secret: razorpayKeySecret 
+  });
+  
+  if (!keyId || !keySecret) {
+    console.log('⚠️  Using fallback Razorpay credentials');
+  } else {
+    console.log('✅ Razorpay initialized with environment credentials');
+  }
+} catch (e) { 
+  console.error('❌ Razorpay initialization failed:', e.message);
+}
 
 let stripe;
 try {
@@ -19,8 +48,19 @@ exports.createRazorpayOrder = async (req, res) => {
     if (!razorpay) return res.status(500).json({ message: 'Razorpay not configured' });
     const { amount, currency = 'INR' } = req.body;
     const order = await razorpay.orders.create({ amount: Math.round(amount * 100), currency, receipt: `receipt_${Date.now()}` });
-    res.json({ success: true, key: process.env.RAZORPAY_KEY_ID, orderId: order.id, amount: order.amount, currency: order.currency });
+    
+    // Use environment key or fallback
+    const razorpayKey = process.env.RAZORPAY_KEY_ID || 'rzp_test_RDG5JVvoKELSk0';
+    
+    res.json({ 
+      success: true, 
+      key: razorpayKey, 
+      orderId: order.id, 
+      amount: order.amount, 
+      currency: order.currency 
+    });
   } catch (err) {
+    console.error('Razorpay order creation error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 };
@@ -30,10 +70,15 @@ exports.verifyRazorpayPayment = async (req, res) => {
   try {
     const { razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
     const sign = razorpayOrderId + '|' + razorpayPaymentId;
-    const expected = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET).update(sign).digest('hex');
+    
+    // Use environment secret or fallback
+    const razorpaySecret = process.env.RAZORPAY_KEY_SECRET || 'N5tamdzyBKMT2E1M2TVR01PT';
+    
+    const expected = crypto.createHmac('sha256', razorpaySecret).update(sign).digest('hex');
     if (expected !== razorpaySignature) return res.status(400).json({ success: false, message: 'Invalid signature' });
     res.json({ success: true, verified: true });
   } catch (err) {
+    console.error('Razorpay verification error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 };

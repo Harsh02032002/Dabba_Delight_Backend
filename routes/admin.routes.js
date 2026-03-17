@@ -2,6 +2,7 @@ const router = require('express').Router();
 const adminAuth = require('../middleware/admin.middleware');
 const ac = require('../controllers/admin.controller');
 const oc = require('../controllers/order.controller');
+const gstController = require('../controllers/gstSettings.controller');
 
 // Dashboard
 router.get('/dashboard', adminAuth, ac.getDashboard);
@@ -24,7 +25,7 @@ router.post('/users/:id/unblock', adminAuth, ac.unblockUser);
 
 // Orders
 router.get('/orders', adminAuth, oc.getAdminOrders);
-router.post('/orders/:id/refund', adminAuth, ac.refundOrder);
+// router.post('/orders/:id/refund', adminAuth, oc.refundOrder); // Function not implemented yet
 
 // Disputes
 router.get('/disputes', adminAuth, ac.getDisputes);
@@ -47,9 +48,15 @@ router.post('/settlements/bulk-process', adminAuth, ac.bulkProcessSettlements);
 router.get('/commission', adminAuth, ac.getCommissionConfig);
 router.put('/commission', adminAuth, ac.updateCommissionConfig);
 
-// GST
+// GST (Old routes for backward compatibility)
 router.get('/gst', adminAuth, ac.getGSTConfig);
 router.put('/gst', adminAuth, ac.updateGSTConfig);
+
+// GST Settings (New comprehensive GST control)
+router.get('/gst/settings', adminAuth, gstController.getGSTSettings);
+router.put('/gst/settings', adminAuth, gstController.updateGSTSettings);
+router.post('/gst/reset', adminAuth, gstController.resetGSTSettings);
+router.get('/gst/summary', adminAuth, gstController.getGSTSummary);
 
 // Referrals
 router.get('/referrals', adminAuth, ac.getReferrals);

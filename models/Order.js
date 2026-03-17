@@ -46,7 +46,10 @@ const orderSchema = new mongoose.Schema({
   statusHistory: [{
     status: String,
     timestamp: { type: Date, default: Date.now },
-    updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    updatedBy: { 
+      type: mongoose.Schema.Types.Mixed,
+      default: null
+    },
   }],
 }, { timestamps: true });
 

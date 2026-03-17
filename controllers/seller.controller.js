@@ -2,6 +2,7 @@ const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Seller = require('../models/Seller');
 const User = require('../models/User');
+const { WalletTransaction } = require('../models/Others');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const {
@@ -247,6 +248,46 @@ exports.uploadKYCDocument = async (req, res) => {
 exports.submitKYC = async (req, res) => {
   try { req.seller.kycStatus = 'submitted'; await req.seller.save(); res.json({ success: true, kycStatus: 'submitted' }); }
   catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
+exports.deleteKYCDocument = async (req, res) => {
+  try {
+    const { type } = req.params;
+    if (!req.seller.kycDocuments) req.seller.kycDocuments = {};
+    if (req.seller.kycDocuments[type]) {
+      delete req.seller.kycDocuments[type];
+      req.seller.markModified('kycDocuments');
+      await req.seller.save();
+    }
+    const docsObj = req.seller.kycDocuments || {};
+    const documents = Object.entries(docsObj).map(([t, info]) => ({
+      type: t,
+      ...(info || {}),
+    }));
+    res.json({ success: true, documents });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
+exports.updateKYCDocument = async (req, res) => {
+  try {
+    const { type } = req.params;
+    const fileUrl = req.file?.s3Url || null;
+    if (!type || !fileUrl) return res.status(400).json({ message: 'type and file required' });
+    if (!req.seller.kycDocuments) req.seller.kycDocuments = {};
+    req.seller.kycDocuments[type] = {
+      url: fileUrl,
+      status: 'uploaded',
+      uploadedAt: new Date(),
+    };
+    req.seller.markModified('kycDocuments');
+    await req.seller.save();
+    const docsObj = req.seller.kycDocuments || {};
+    const documents = Object.entries(docsObj).map(([t, info]) => ({
+      type: t,
+      ...(info || {}),
+    }));
+    res.json({ success: true, documents });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
 // ─── Referrals ──────────────────────────────────
@@ -500,4 +541,31 @@ exports.getNotifications = async (req, res) => {
 exports.markNotificationRead = async (req, res) => {
   try { await Notification.findByIdAndUpdate(req.params.id, { isRead: true }); res.json({ success: true }); }
   catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
+// ─── Wallet ─────────────────────────────────────
+exports.getWalletTransactions = async (req, res) => {
+  try {
+    const transactions = await WalletTransaction.find({ sellerId: req.seller._id }).sort({ createdAt: -1 }).limit(50);
+    res.json({ success: true, transactions, balance: req.seller.wallet || 0 });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
+exports.withdrawFromWallet = async (req, res) => {
+  try {
+    const { amount } = req.body;
+    if (req.seller.wallet < amount) {
+      return res.status(400).json({ success: false, message: 'Insufficient balance' });
+    }
+    const seller = await Seller.findByIdAndUpdate(req.seller._id, { $inc: { wallet: -amount } }, { new: true });
+    await WalletTransaction.create({
+      sellerId: req.seller._id,
+      type: 'debit',
+      amount,
+      description: 'Wallet withdrawal',
+      referenceType: 'withdrawal',
+      balance: seller.wallet,
+    });
+    res.json({ success: true, wallet: seller.wallet });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };

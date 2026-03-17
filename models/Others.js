@@ -187,7 +187,10 @@ const deliveryPartnerSchema = new mongoose.Schema({
   vehicleType: { type: String, enum: ['bike', 'scooter', 'bicycle', 'car'], default: 'bike' },
   vehicleNumber: String,
   licenseNumber: String,
-  currentLocation: { type: { type: String, default: 'Point' }, coordinates: [Number] },
+  currentLocation: { 
+    type: { type: String, default: 'Point' }, 
+    coordinates: { type: [Number], default: [0, 0] } 
+  },
   isAvailable: { type: Boolean, default: false },
   isOnline: { type: Boolean, default: false },
   isOnBreak: { type: Boolean, default: false },

@@ -3,8 +3,9 @@ const User = require('../models/User');
 const Seller = require('../models/Seller');
 const { Referral, ReferralConfig } = require('../models/Others');
 const { sendEmail, generateCode } = require('../utils/email.service');
+const { getJwtSecret } = require('../utils/jwt');
 
-const generateToken = (id) => jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
+const generateToken = (id) => jwt.sign({ id }, getJwtSecret(), { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
 
 // POST /api/auth/register
 exports.register = async (req, res) => {
@@ -315,5 +316,88 @@ exports.updateBanner = async (req, res) => {
     res.json({ success: true, banner: user.banner });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// POST /api/auth/resend-verification
+exports.resendVerificationCode = async (req, res) => {
+  try {
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Email is required' 
+      });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    if (user.isVerified) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Email is already verified' 
+      });
+    }
+
+    // Generate new verification code
+    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    user.verificationCode = verificationCode;
+    user.verificationCodeExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+    await user.save();
+
+    // Send verification email
+    await sendEmail({
+      to: user.email,
+      subject: '🔔 New Email Verification Code - Dabba Nation',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: linear-gradient(135deg, #E86F2A 0%, #FF6B35 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
+            <h1 style="color: white; margin: 0; font-size: 32px;">🍱 Dabba Nation</h1>
+            <p style="color: rgba(255,255,255,0.9); margin: 10px 0 0 0;">Email Verification Code</p>
+          </div>
+          <div style="background: white; padding: 40px; border-radius: 0 0 10px 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.1);">
+            <h2 style="color: #333; margin: 0 0 20px 0;">Hello ${user.name},</h2>
+            <p style="color: #666; font-size: 16px; line-height: 1.6; margin: 0 0 30px 0;">
+              Your new verification code is:
+            </p>
+            <div style="background: #f8f9fa; border: 2px dashed #E86F2A; padding: 20px; border-radius: 8px; text-align: center; margin: 30px 0;">
+              <span style="font-size: 32px; font-weight: bold; color: #E86F2A; letter-spacing: 3px;">${verificationCode}</span>
+            </div>
+            <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 20px 0 0 0;">
+              ⏰ This code will expire in <strong>10 minutes</strong>.<br>
+              📝 Please enter this code in verification page to complete your registration.
+            </p>
+            <div style="background: #f0f8ff; border-left: 4px solid #E86F2A; padding: 15px; margin: 30px 0 0 0;">
+              <p style="margin: 0; color: #666;">
+                <strong>🔒 Security Notice:</strong> Never share this code with anyone. Our team will never ask for your verification code.
+              </p>
+            </div>
+          </div>
+          <div style="text-align: center; padding: 20px; color: #999; font-size: 12px;">
+            <p>© 2024 Dabba Nation. All rights reserved.</p>
+            <p>This is an automated message, please do not reply to this email.</p>
+          </div>
+        </div>
+      `
+    });
+
+    res.json({ 
+      success: true, 
+      message: 'Verification code sent successfully. Please check your email.' 
+    });
+    
+  } catch (err) {
+    console.error('Resend verification error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to send verification code. Please try again.' 
+    });
   }
 };

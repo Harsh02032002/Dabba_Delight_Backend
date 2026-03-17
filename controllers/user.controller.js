@@ -2,6 +2,7 @@ const { Notification, WalletTransaction, Banner } = require('../models/Others');
 const User = require('../models/User');
 const Seller = require('../models/Seller');
 const Product = require('../models/Product');
+const RatingService = require('../services/rating.service');
 
 // ─── Notifications ──────────────────────────────
 exports.getNotifications = async (req, res) => {
@@ -87,10 +88,22 @@ exports.getMenuItems = async (req, res) => {
       { name: { $regex: req.query.search, $options: 'i' } },
       { tags: { $regex: req.query.search, $options: 'i' } },
     ];
-    const products = await Product.find(filter)
+
+    let query = Product.find(filter)
       .populate('sellerId', 'businessName type logo rating')
-      .sort({ rating: -1 }).limit(Number(req.query.limit) || 20)
+      .sort({ rating: -1 });
+
+    // Filter by seller type if specified
+    if (req.query.type) {
+      query = query.where('sellerId').in(
+        await Seller.find({ type: req.query.type, isActive: true }).distinct('_id')
+      );
+    }
+
+    const products = await query
+      .limit(Number(req.query.limit) || 20)
       .skip(((Number(req.query.page) || 1) - 1) * (Number(req.query.limit) || 20));
+    
     const total = await Product.countDocuments(filter);
     res.json({ success: true, products, total });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
@@ -123,4 +136,111 @@ exports.getActiveBanners = async (req, res) => {
     const banners = await Banner.find({ isActive: true }).sort({ sortOrder: 1 });
     res.json({ success: true, banners });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
+// ─── Ratings ────────────────────────────────────
+exports.rateOrder = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { rating, review } = req.body;
+
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({ success: false, message: 'Rating must be between 1 and 5' });
+    }
+
+    const Order = require('../models/Order');
+    const order = await Order.findOne({ _id: orderId, userId: req.user._id });
+    
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    if (order.status !== 'delivered') {
+      return res.status(400).json({ success: false, message: 'Order must be delivered to be rated' });
+    }
+
+    const updatedOrder = await RatingService.updateOrderRating(orderId, rating, review);
+    
+    res.json({ 
+      success: true, 
+      message: 'Rating submitted successfully',
+      order: updatedOrder
+    });
+  } catch (err) { 
+    res.status(500).json({ success: false, message: err.message }); 
+  }
+};
+
+exports.getSellerRatingBreakdown = async (req, res) => {
+  try {
+    const { sellerId } = req.params;
+    const breakdown = await RatingService.getSellerRatingBreakdown(sellerId);
+    res.json({ success: true, breakdown });
+  } catch (err) { 
+    res.status(500).json({ success: false, message: err.message }); 
+  }
+};
+
+// POST /user/menu/:menuItemId/rate
+exports.rateMenuItem = async (req, res) => {
+  try {
+    const { menuItemId } = req.params;
+    const { rating } = req.body;
+    const userId = req.user.id;
+
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({ success: false, message: 'Invalid rating' });
+    }
+
+    // Find the menu item
+    const Product = require('../models/Product');
+    const menuItem = await Product.findById(menuItemId);
+    if (!menuItem) {
+      return res.status(404).json({ success: false, message: 'Menu item not found' });
+    }
+
+    // Update menu item rating (simple average for now)
+    const currentRating = menuItem.rating || 0;
+    const currentRatings = menuItem.ratingCount || 0;
+    
+    menuItem.rating = ((currentRating * currentRatings) + rating) / (currentRatings + 1);
+    menuItem.ratingCount = currentRatings + 1;
+    await menuItem.save();
+
+    res.json({ success: true, rating: menuItem.rating });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// POST /user/sellers/:sellerId/rate
+exports.rateSeller = async (req, res) => {
+  try {
+    const { sellerId } = req.params;
+    const { rating } = req.body;
+    const userId = req.user.id;
+
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({ success: false, message: 'Invalid rating' });
+    }
+
+    // Find the seller
+    const Seller = require('../models/Seller');
+    const seller = await Seller.findById(sellerId);
+    if (!seller) {
+      return res.status(404).json({ success: false, message: 'Seller not found' });
+    }
+
+    // Update seller rating (simple average for now)
+    const currentRating = seller.rating || 0;
+    const currentRatings = seller.ratingCount || 0;
+    
+    seller.rating = ((currentRating * currentRatings) + rating) / (currentRatings + 1);
+    seller.ratingCount = currentRatings + 1;
+    await seller.save();
+
+    res.json({ success: true, rating: seller.rating });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
 };

@@ -24,4 +24,10 @@ router.post('/wallet/topup', auth, uc.topupWallet);
 router.post('/wallet/verify', auth, uc.verifyWalletPayment);
 router.get('/wallet/transactions', auth, uc.getWalletTransactions);
 
+// Rating routes
+router.post('/menu/:menuItemId/rate', auth, uc.rateMenuItem);
+router.post('/sellers/:sellerId/rate', auth, uc.rateSeller);
+router.post('/orders/:orderId/rate', auth, uc.rateOrder);
+router.get('/sellers/:sellerId/rating-breakdown', auth, uc.getSellerRatingBreakdown);
+
 module.exports = router;

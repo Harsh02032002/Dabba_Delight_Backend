@@ -1,5 +1,73 @@
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '.env') });
+const fs = require('fs');
+
+const envPath = path.join(__dirname, '.env');
+
+console.log('🔧 Loading environment from:', envPath);
+console.log('📁 .env file exists:', fs.existsSync(envPath));
+
+require('dotenv').config({ path: envPath });
+
+// Debug: Check if dotenv loaded variables
+console.log('🔍 Debug - EMAIL_USER after dotenv:', process.env.EMAIL_USER);
+console.log('🔍 Debug - EMAIL_PASS after dotenv:', process.env.EMAIL_PASS ? 'SET' : 'UNDEFINED');
+console.log('🔍 Debug - JWT_SECRET after dotenv:', process.env.JWT_SECRET ? 'SET' : 'UNDEFINED');
+
+// Additional check for specific variables
+if (!process.env.JWT_SECRET && fs.existsSync(envPath)) {
+  try {
+    const c = fs.readFileSync(envPath, 'utf8');
+    const m = c && c.match(/JWT_SECRET\s*=\s*([^\r\n#]+)/);
+    if (m) process.env.JWT_SECRET = m[1].trim();
+  } catch (error) {
+    console.error('❌ Error reading JWT_SECRET:', error.message);
+  }
+}
+
+// Additional check for specific variables
+if (!process.env.JWT_SECRET && fs.existsSync(envPath)) {
+  try {
+    const c = fs.readFileSync(envPath, 'utf8');
+    const m = c && c.match(/JWT_SECRET\s*=\s*([^\r\n#]+)/);
+    if (m) process.env.JWT_SECRET = m[1].trim();
+  } catch (error) {
+    console.error('❌ Error reading JWT_SECRET:', error.message);
+  }
+}
+
+// Set fallback values from memory if not loaded
+if (!process.env.MONGO_URI) {
+  process.env.MONGO_URI = 'mongodb+srv://Harsh:Harsh%402925@cluster0.hddqr9e.mongodb.net/Dabbanation_db?retryWrites=true&w=majority&appName=Cluster0';
+  console.log('🔄 Using fallback MONGO_URI');
+}
+
+if (!process.env.JWT_SECRET) {
+  process.env.JWT_SECRET = 'QWEWRWETWQEIUTIOEKALDJGAADSKGLJASDKLGJIOETU';
+  console.log('🔄 Using fallback JWT_SECRET');
+}
+
+if (!process.env.RAZORPAY_KEY_ID) {
+  process.env.RAZORPAY_KEY_ID = 'rzp_test_RDG5JVvoKELSk0';
+  console.log('🔄 Using fallback RAZORPAY_KEY_ID');
+}
+
+if (!process.env.RAZORPAY_KEY_SECRET) {
+  process.env.RAZORPAY_KEY_SECRET = 'N5tamdzyBKMT2E1M2TVR01PT';
+  console.log('🔄 Using fallback RAZORPAY_KEY_SECRET');
+}
+
+if (!process.env.FRONTEND_URL) {
+  process.env.FRONTEND_URL = 'http://localhost:8080';
+  console.log('🔄 Using fallback FRONTEND_URL');
+}
+
+if (!process.env.JWT_SECRET && fs.existsSync(envPath)) {
+  try {
+    const v = fs.readFileSync(envPath, 'utf8').match(/JWT_SECRET\s*=\s*([^\r\n#]+)/)?.[1]?.trim();
+    if (v) process.env.JWT_SECRET = v;
+  } catch (_) {}
+}
+
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
@@ -11,17 +79,165 @@ const server = http.createServer(app);
 
 // ─── Socket.IO ──────────────────────────────────────
 const io = new Server(server, {
-  cors: { origin: process.env.FRONTEND_URL || '*', methods: ['GET', 'POST'] },
+  cors: { 
+    origin: ['http://localhost:8081', 'http://localhost:8082', 'http://localhost:8080', 'http://localhost:5173','http://56.228.4.127'], 
+    methods: ['GET', 'POST'] 
+  },
+});
+
+// Socket authentication middleware (uses same JWT_SECRET as auth/partner login)
+const { getJwtSecret } = require('./utils/jwt');
+io.use(async (socket, next) => {
+  try {
+    const token = socket.handshake.auth.token;
+    if (!token) {
+      console.log('❌ Socket auth: No token provided');
+      return next(new Error('Authentication error: No token provided'));
+    }
+
+    console.log('🔐 Socket auth: Verifying token...');
+    const jwt = require('jsonwebtoken');
+    const decoded = jwt.verify(token, getJwtSecret());
+    
+    // Attach user info to socket
+    socket.userId = decoded.id;
+    socket.userEmail = decoded.email;
+    socket.userRole = decoded.role;
+    
+    console.log(`✅ Socket authenticated: ${socket.userEmail} (${socket.userRole})`);
+    next();
+  } catch (err) {
+    console.error('❌ Socket authentication error:', err.message);
+    console.log('🔑 Token being verified:', socket.handshake.auth.token?.substring(0, 20) + '...');
+    
+    // Don't block connection entirely, just mark as unauthenticated
+    socket.authenticated = false;
+    socket.authError = err.message;
+    next();
+  }
 });
 
 io.on('connection', (socket) => {
-  console.log('Socket connected:', socket.id);
+  // Check if authentication was successful
+  if (socket.authError) {
+    console.log(`❌ Socket ${socket.id} connected but not authenticated: ${socket.authError}`);
+    // Allow connection but limit functionality
+    socket.emit('auth_error', { message: socket.authError });
+    return;
+  }
 
-  socket.on('join_room', (room) => socket.join(room));
-  socket.on('leave_room', (room) => socket.leave(room));
+  console.log('✅ Socket connected:', socket.id, 'User:', socket.userEmail, 'Role:', socket.userRole);
 
-  socket.on('disconnect', () => {
-    console.log('Socket disconnected:', socket.id);
+  socket.on('join_room', (room) => {
+    socket.join(room);
+    console.log(`📱 Socket ${socket.id} joined room: ${room}`);
+  });
+  
+  socket.on('leave_room', (room) => {
+    socket.leave(room);
+    console.log(`📱 Socket ${socket.id} left room: ${room}`);
+  });
+
+  // Delivery partner specific events (only for authenticated users)
+  if (socket.userRole === 'delivery') {
+    socket.on('partnerOnline', () => {
+      console.log(`🛵 Partner ${socket.userEmail} went online`);
+      socket.broadcast.emit('partnerStatusUpdate', { 
+        partnerId: socket.userId, 
+        status: 'online',
+        email: socket.userEmail
+      });
+    });
+
+    socket.on('partnerOffline', () => {
+      console.log(`🛵 Partner ${socket.userEmail} went offline`);
+      socket.broadcast.emit('partnerStatusUpdate', { 
+        partnerId: socket.userId, 
+        status: 'offline',
+        email: socket.userEmail
+      });
+    });
+
+    socket.on('locationUpdate', (data) => {
+      console.log(`📍 Location update from ${socket.userEmail}:`, data);
+      socket.broadcast.emit('partnerLocationUpdate', {
+        partnerId: socket.userId,
+        partnerEmail: socket.userEmail,
+        location: data,
+        timestamp: new Date()
+      });
+    });
+
+    // Join partner-specific room for targeted updates
+    socket.join(`partner_${socket.userId}`);
+    console.log(`📱 Partner ${socket.userEmail} joined room: partner_${socket.userId}`);
+  }
+
+  // User specific events (only for authenticated users)
+  if (socket.userRole === 'user') {
+    socket.on('userOnline', () => {
+      console.log(`👤 User ${socket.userEmail} went online`);
+      socket.broadcast.emit('userStatusUpdate', { 
+        userId: socket.userId, 
+        status: 'online',
+        email: socket.userEmail
+      });
+    });
+
+    socket.on('userOffline', () => {
+      console.log(`👤 User ${socket.userEmail} went offline`);
+      socket.broadcast.emit('userStatusUpdate', { 
+        userId: socket.userId, 
+        status: 'offline',
+        email: socket.userEmail
+      });
+    });
+
+    socket.on('userLocationUpdate', (data) => {
+      console.log(`📍 User location update from ${socket.userEmail}:`, data);
+      socket.broadcast.emit('userLocationUpdate', {
+        userId: socket.userId,
+        userEmail: socket.userEmail,
+        location: data,
+        timestamp: new Date()
+      });
+    });
+
+    socket.on('trackOrder', (data) => {
+      console.log(`📦 User ${socket.userEmail} tracking order:`, data.orderId);
+      socket.join(`order_${data.orderId}`);
+      console.log(`📱 User ${socket.userEmail} joined order room: order_${data.orderId}`);
+    });
+
+    // Join user-specific room for targeted updates
+    socket.join(`user_${socket.userId}`);
+    console.log(`📱 User ${socket.userEmail} joined room: user_${socket.userId}`);
+  }
+
+  socket.on('disconnect', (reason) => {
+    console.log('❌ Socket disconnected:', socket.id, 'User:', socket.userEmail, 'Reason:', reason);
+    
+    // Notify others about disconnection
+    if (socket.userRole === 'delivery') {
+      socket.broadcast.emit('partnerStatusUpdate', { 
+        partnerId: socket.userId, 
+        status: 'offline',
+        email: socket.userEmail,
+        reason: reason
+      });
+    } else if (socket.userRole === 'user') {
+      socket.broadcast.emit('userStatusUpdate', { 
+        userId: socket.userId, 
+        status: 'offline',
+        email: socket.userEmail,
+        reason: reason
+      });
+    }
+  });
+
+  // Handle connection errors
+  socket.on('error', (error) => {
+    console.error(`❌ Socket error for ${socket.id}:`, error);
   });
 });
 
@@ -29,7 +245,10 @@ io.on('connection', (socket) => {
 app.set('io', io);
 
 // ─── Middleware ──────────────────────────────────────
-app.use(cors({ origin: process.env.FRONTEND_URL || '*', credentials: true }));
+app.use(cors({ 
+  origin: ['http://localhost:8081', 'http://localhost:8082', 'http://localhost:8080', 'http://localhost:5173'], 
+  credentials: true 
+}));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -50,6 +269,7 @@ app.use('/api/products', require('./routes/product.routes'));
 app.use('/api/invoice', require('./routes/invoice.routes'));
 app.use('/api/payment', require('./routes/payment.routes'));
 app.use('/api/delivery', require('./routes/delivery.routes'));
+app.use('/api/partner', require('./routes/partner.routes'));
 app.use('/api/seller', require('./routes/seller.routes'));
 app.use('/api/seller/profile', require('./routes/seller.profile.routes'));
 app.use('/api/admin', require('./routes/admin.routes'));
