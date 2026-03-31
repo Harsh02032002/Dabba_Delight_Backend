@@ -75,4 +75,11 @@ userSchema.pre('save', function () {
   }
 });
 
+// Indexes for faster queries
+userSchema.index({ email: 1 });
+userSchema.index({ role: 1 });
+userSchema.index({ isVerified: 1 });
+userSchema.index({ referralCode: 1 });
+userSchema.index({ createdAt: -1 });
+
 module.exports = mongoose.model('User', userSchema);

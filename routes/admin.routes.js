@@ -15,11 +15,14 @@ router.get('/analytics/cart-dropoffs', adminAuth, ac.getCartDropoffs);
 
 // Sellers
 router.get('/sellers', adminAuth, ac.getSellers);
+router.post('/sellers', adminAuth, ac.createSeller);
+router.delete('/sellers/:id', adminAuth, ac.deleteSeller);
 router.post('/sellers/:id/approve', adminAuth, ac.approveSeller);
 router.post('/sellers/:id/reject', adminAuth, ac.rejectSeller);
 
 // Users
 router.get('/users', adminAuth, ac.getUsers);
+router.delete('/users/:id', adminAuth, ac.deleteUser);
 router.post('/users/:id/block', adminAuth, ac.blockUser);
 router.post('/users/:id/unblock', adminAuth, ac.unblockUser);
 

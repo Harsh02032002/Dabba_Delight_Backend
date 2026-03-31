@@ -73,7 +73,11 @@ exports.getSellers = async (req, res) => {
     const filter = { isActive: true };
     if (req.query.type) filter.type = req.query.type;
     if (req.query.search) filter.businessName = { $regex: req.query.search, $options: 'i' };
-    const sellers = await Seller.find(filter).sort({ rating: -1 });
+    // Select only required fields for faster response
+    const sellers = await Seller.find(filter)
+      .select('_id businessName type logo coverImage rating totalOrders totalRevenue cuisines address.city address.state isActive isVerified')
+      .sort({ rating: -1 })
+      .lean(); // Use lean() for faster queries
     res.json({ success: true, sellers, total: sellers.length });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
@@ -89,16 +93,12 @@ exports.getMenuItems = async (req, res) => {
       { tags: { $regex: req.query.search, $options: 'i' } },
     ];
 
+    // Select only required fields for faster response
     let query = Product.find(filter)
-      .populate('sellerId', 'businessName type logo rating')
-      .sort({ rating: -1 });
-
-    // Filter by seller type if specified
-    if (req.query.type) {
-      query = query.where('sellerId').in(
-        await Seller.find({ type: req.query.type, isActive: true }).distinct('_id')
-      );
-    }
+      .select('_id sellerId name description price discountPrice category image isVeg preparationTime rating totalOrders stock')
+      .populate('sellerId', '_id businessName type logo rating')
+      .sort({ rating: -1 })
+      .lean(); // Use lean() for faster queries
 
     const products = await query
       .limit(Number(req.query.limit) || 20)
@@ -111,7 +111,9 @@ exports.getMenuItems = async (req, res) => {
 
 exports.getSellerById = async (req, res) => {
   try {
-    const seller = await Seller.findById(req.params.id);
+    // Select only required fields
+    const seller = await Seller.findById(req.params.id)
+      .select('-bankDetails -kycDocuments.aadhaar -kycDocuments.pan -kycDocuments.fssai -kycDocuments.bankProof');
     if (!seller) {
       return res.status(404).json({ success: false, message: 'Seller not found' });
     }
@@ -124,8 +126,11 @@ exports.getSellerById = async (req, res) => {
 exports.getRecommendations = async (req, res) => {
   try {
     const products = await Product.find({ isAvailable: true, status: 'published' })
-      .populate('sellerId', 'businessName type logo rating')
-      .sort({ totalOrders: -1, rating: -1 }).limit(10);
+      .select('_id sellerId name description price discountPrice category image isVeg preparationTime rating totalOrders')
+      .populate('sellerId', '_id businessName type logo rating')
+      .sort({ totalOrders: -1, rating: -1 })
+      .limit(10)
+      .lean(); // Use lean() for faster queries
     res.json({ success: true, products });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };

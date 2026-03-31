@@ -15,6 +15,8 @@ exports.getDashboard = async (req, res) => {
   try {
     const sellerId = req.seller._id;
     const today = new Date(); today.setHours(0, 0, 0, 0);
+    
+    // Use lean() for faster queries and select only needed fields
     const [totalOrders, todayOrders, pendingOrders, totalProducts, totalRevenue, pendingSettlements] = await Promise.all([
       Order.countDocuments({ sellerId }),
       Order.countDocuments({ sellerId, createdAt: { $gte: today } }),
@@ -23,8 +25,26 @@ exports.getDashboard = async (req, res) => {
       Order.aggregate([{ $match: { sellerId, status: 'delivered' } }, { $group: { _id: null, total: { $sum: '$total' } } }]),
       Settlement.countDocuments({ sellerId, status: 'pending' }),
     ]);
-    const recentOrders = await Order.find({ sellerId }).sort({ createdAt: -1 }).limit(5).populate('userId', 'name');
-    res.json({ success: true, totalOrders, todayOrders, pendingOrders, totalProducts, totalRevenue: totalRevenue[0]?.total || 0, pendingSettlements, recentOrders, rating: req.seller.rating });
+    
+    // Select only required fields for recent orders
+    const recentOrders = await Order.find({ sellerId })
+      .select('_id orderNumber userId items total status createdAt')
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .populate('userId', 'name')
+      .lean();
+      
+    res.json({ 
+      success: true, 
+      totalOrders, 
+      todayOrders, 
+      pendingOrders, 
+      totalProducts, 
+      totalRevenue: totalRevenue[0]?.total || 0, 
+      pendingSettlements, 
+      recentOrders, 
+      rating: req.seller.rating 
+    });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 

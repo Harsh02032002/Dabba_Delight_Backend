@@ -62,4 +62,14 @@ orderSchema.pre('save', async function() {
   }
 });
 
+// Indexes for faster queries
+orderSchema.index({ userId: 1, createdAt: -1 });
+orderSchema.index({ sellerId: 1, createdAt: -1 });
+orderSchema.index({ status: 1 });
+orderSchema.index({ orderNumber: 1 });
+orderSchema.index({ paymentStatus: 1 });
+orderSchema.index({ deliveryPartnerId: 1 });
+orderSchema.index({ 'deliveryAddress.location': '2dsphere' });
+orderSchema.index({ createdAt: -1 });
+
 module.exports = mongoose.model('Order', orderSchema);

@@ -33,9 +33,36 @@ const connectDB = async () => {
     console.log('📍 URI length:', mongoUri.length);
     console.log('🔍 URI preview:', mongoUri.substring(0, 50) + '...');
     
-    const conn = await mongoose.connect(mongoUri);
+    // Optimized connection options for better performance
+    const conn = await mongoose.connect(mongoUri, {
+      maxPoolSize: 20,              // Connection pool for concurrent requests
+      serverSelectionTimeoutMS: 5000,  // Timeout for server selection
+      socketTimeoutMS: 45000,       // Socket timeout
+      connectTimeoutMS: 10000,      // Connection timeout
+      minPoolSize: 5,               // Minimum connections in pool
+      maxIdleTimeMS: 30000,         // Max idle time before closing connection
+      waitQueueTimeoutMS: 5000,       // Queue timeout
+      // Performance optimizations
+      readPreference: 'primaryPreferred',  // Read from primary, fallback to secondary
+    });
+    
     console.log(`✅ MongoDB connected: ${conn.connection.host}`);
     console.log('🗄️  Database:', conn.connection.name);
+    console.log(`📊 Connection Pool Size: ${conn.connection.getClient().options.maxPoolSize}`);
+    
+    // Handle connection events
+    mongoose.connection.on('error', (err) => {
+      console.error('❌ MongoDB connection error:', err.message);
+    });
+    
+    mongoose.connection.on('disconnected', () => {
+      console.log('⚠️  MongoDB disconnected. Will attempt to reconnect...');
+    });
+    
+    mongoose.connection.on('reconnected', () => {
+      console.log('✅ MongoDB reconnected');
+    });
+    
   } catch (err) {
     console.error('❌ MongoDB connection error:', err.message);
     console.error('Full error:', err);

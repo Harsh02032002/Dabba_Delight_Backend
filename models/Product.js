@@ -64,4 +64,13 @@ productSchema.index({ sellerId: 1, isDeleted: 1 });
 productSchema.index({ category: 1 });
 productSchema.index({ name: 'text', description: 'text', tags: 'text' });
 
+// Additional indexes for faster queries
+productSchema.index({ sellerId: 1, status: 1, isDeleted: 1 });
+productSchema.index({ sellerId: 1, isAvailable: 1 });
+productSchema.index({ isVeg: 1 });
+productSchema.index({ price: 1 });
+productSchema.index({ rating: -1 });
+productSchema.index({ totalOrders: -1 });
+productSchema.index({ createdAt: -1 });
+
 module.exports = mongoose.model('Product', productSchema);

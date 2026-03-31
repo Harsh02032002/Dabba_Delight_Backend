@@ -91,6 +91,53 @@ exports.getSellers = async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
+exports.createSeller = async (req, res) => {
+  try {
+    const { name, email, password, phone, businessName, type, address, gstNumber } = req.body;
+    
+    // Check if user already exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ success: false, message: 'User with this email already exists' });
+    }
+    
+    // Create user with seller role
+    const user = await User.create({
+      name,
+      email,
+      password,
+      phone,
+      role: 'seller',
+      isVerified: true
+    });
+    
+    // Create seller profile
+    const seller = await Seller.create({
+      userId: user._id,
+      businessName,
+      type: type || 'home_chef',
+      email,
+      phone,
+      address,
+      gstNumber,
+      isActive: true,
+      isVerified: true,
+      kycStatus: 'verified'
+    });
+    
+    await logAction(req, 'seller_created', 'Seller', seller._id, { businessName, email });
+    
+    res.status(201).json({ 
+      success: true, 
+      message: 'Seller created successfully', 
+      seller: await Seller.findById(seller._id).populate('userId', 'name email phone')
+    });
+  } catch (err) { 
+    console.error('Create seller error:', err);
+    res.status(500).json({ success: false, message: err.message }); 
+  }
+};
+
 exports.approveSeller = async (req, res) => {
   try {
     const seller = await Seller.findByIdAndUpdate(req.params.id, { isActive: true, isVerified: true, kycStatus: 'verified' }, { new: true });
@@ -108,6 +155,25 @@ exports.rejectSeller = async (req, res) => {
     await logAction(req, 'seller_rejected', 'Seller', seller._id);
     res.json({ success: true, seller });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
+exports.deleteSeller = async (req, res) => {
+  try {
+    const seller = await Seller.findById(req.params.id);
+    if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+    
+    // Delete seller and associated user
+    await Seller.findByIdAndDelete(req.params.id);
+    if (seller.userId) {
+      await User.findByIdAndDelete(seller.userId);
+    }
+    
+    await logAction(req, 'seller_deleted', 'Seller', req.params.id, { businessName: seller.businessName });
+    res.json({ success: true, message: 'Seller deleted successfully' });
+  } catch (err) { 
+    console.error('Delete seller error:', err);
+    res.status(500).json({ success: false, message: err.message }); 
+  }
 };
 
 // ─── Users ──────────────────────────────────────
@@ -130,6 +196,20 @@ exports.blockUser = async (req, res) => {
 exports.unblockUser = async (req, res) => {
   try { await User.findByIdAndUpdate(req.params.id, { isBlocked: false }); await logAction(req, 'user_unblocked', 'User', req.params.id); res.json({ success: true }); }
   catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
+exports.deleteUser = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    
+    await User.findByIdAndDelete(req.params.id);
+    await logAction(req, 'user_deleted', 'User', req.params.id, { email: user.email });
+    res.json({ success: true, message: 'User deleted successfully' });
+  } catch (err) { 
+    console.error('Delete user error:', err);
+    res.status(500).json({ success: false, message: err.message }); 
+  }
 };
 
 // ─── Orders ─────────────────────────────────────

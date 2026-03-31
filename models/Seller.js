@@ -58,4 +58,15 @@ const sellerSchema = new mongoose.Schema({
 
 sellerSchema.index({ 'address.location': '2dsphere' });
 
+// Additional indexes for faster queries
+sellerSchema.index({ userId: 1 });
+sellerSchema.index({ type: 1, isActive: 1 });
+sellerSchema.index({ kycStatus: 1 });
+sellerSchema.index({ rating: -1 });
+sellerSchema.index({ totalOrders: -1 });
+sellerSchema.index({ 'address.city': 1 });
+sellerSchema.index({ cuisines: 1 });
+sellerSchema.index({ referralCode: 1 });
+sellerSchema.index({ createdAt: -1 });
+
 module.exports = mongoose.model('Seller', sellerSchema);

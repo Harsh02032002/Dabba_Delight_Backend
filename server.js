@@ -70,12 +70,25 @@ if (!process.env.JWT_SECRET && fs.existsSync(envPath)) {
 
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression'); // Response compression
 const http = require('http');
 const { Server } = require('socket.io');
 const connectDB = require('./config/db');
 
 const app = express();
 const server = http.createServer(app);
+
+// ─── Compression Middleware (GZIP) ─────────────────
+app.use(compression({
+  level: 6, // Compression level (1-9, 6 is good balance)
+  threshold: 1024, // Only compress responses > 1KB
+  filter: (req, res) => {
+    // Don't compress responses with no content
+    if (req.headers['x-no-compression']) return false;
+    // Compress JSON and text responses
+    return compression.filter(req, res);
+  }
+}));
 
 // ─── Socket.IO ──────────────────────────────────────
 const io = new Server(server, {
@@ -245,10 +258,22 @@ io.on('connection', (socket) => {
 app.set('io', io);
 
 // ─── Middleware ──────────────────────────────────────
+// Enable compression for CORS preflight
 app.use(cors({ 
   origin: ['http://localhost:8081', 'http://localhost:8082', 'http://localhost:8080', 'http://localhost:5173'], 
   credentials: true 
 }));
+
+// Request logging for performance monitoring
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} - ${res.statusCode} - ${duration}ms`);
+  });
+  next();
+});
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
