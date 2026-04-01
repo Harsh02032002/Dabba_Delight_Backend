@@ -4,7 +4,8 @@ const productSchema = new mongoose.Schema({
   sellerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Seller', required: true },
   name: { type: String, required: true, trim: true },
   description: { type: String, trim: true },
-  price: { type: Number, required: true },
+  sellingPrice: { type: Number, required: true },
+  costPrice: { type: Number, default: 0 },
   discountPrice: Number,
   category: { type: String, required: true },
   image: String,
@@ -68,7 +69,7 @@ productSchema.index({ name: 'text', description: 'text', tags: 'text' });
 productSchema.index({ sellerId: 1, status: 1, isDeleted: 1 });
 productSchema.index({ sellerId: 1, isAvailable: 1 });
 productSchema.index({ isVeg: 1 });
-productSchema.index({ price: 1 });
+productSchema.index({ sellingPrice: 1 });
 productSchema.index({ rating: -1 });
 productSchema.index({ totalOrders: -1 });
 productSchema.index({ createdAt: -1 });

@@ -98,10 +98,10 @@ exports.markInStock = async (req, res) => {
 // PATCH /api/products/:id/price
 exports.updatePrice = async (req, res) => {
   try {
-    const { price } = req.body;
+    const { sellingPrice } = req.body;
     const product = await Product.findOneAndUpdate(
       { _id: req.params.id, sellerId: req.seller._id },
-      { price }, { new: true }
+      { sellingPrice }, { new: true }
     );
     res.json({ success: true, product });
   } catch (err) {
@@ -307,7 +307,7 @@ exports.bulkAction = async (req, res) => {
       case 'deactivate': update = { isAvailable: false }; break;
       case 'delete': update = { isDeleted: true, deletedAt: new Date(), deletedBy: req.user._id }; break;
       case 'restore': update = { isDeleted: false, deletedAt: null, deletedBy: null }; break;
-      case 'updatePrice': update = { price: value }; break;
+      case 'updatePrice': update = { sellingPrice: value }; break;
       case 'updateCategory': update = { category: value }; break;
       default: return res.status(400).json({ message: 'Invalid action' });
     }
