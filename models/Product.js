@@ -26,6 +26,11 @@ const productSchema = new mongoose.Schema({
   totalOrders: { type: Number, default: 0 },
   status: { type: String, enum: ['draft', 'published', 'archived'], default: 'published' },
 
+  // Admin approval - product only visible to users after admin approval
+  isAdminApproved: { type: Boolean, default: false },
+  adminApprovalDate: { type: Date, default: null },
+  adminApprovalBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+
   // Soft delete
   isDeleted: { type: Boolean, default: false },
   deletedAt: { type: Date, default: null },

@@ -84,7 +84,7 @@ exports.getSellers = async (req, res) => {
 
 exports.getMenuItems = async (req, res) => {
   try {
-    const filter = { isAvailable: true, status: 'published' };
+    const filter = { isAvailable: true, status: 'published', isAdminApproved: true };
     if (req.query.sellerId) filter.sellerId = req.query.sellerId;
     if (req.query.category) filter.category = req.query.category;
     if (req.query.isVeg === 'true') filter.isVeg = true;
@@ -95,7 +95,7 @@ exports.getMenuItems = async (req, res) => {
 
     // Select only required fields for faster response
     let query = Product.find(filter)
-      .select('_id sellerId name description price discountPrice category image isVeg preparationTime rating totalOrders stock')
+      .select('_id sellerId name description sellingPrice discountPrice category image isVeg preparationTime rating totalOrders stock')
       .populate('sellerId', '_id businessName type logo rating')
       .sort({ rating: -1 })
       .lean(); // Use lean() for faster queries
@@ -125,8 +125,8 @@ exports.getSellerById = async (req, res) => {
 
 exports.getRecommendations = async (req, res) => {
   try {
-    const products = await Product.find({ isAvailable: true, status: 'published' })
-      .select('_id sellerId name description price discountPrice category image isVeg preparationTime rating totalOrders')
+    const products = await Product.find({ isAvailable: true, status: 'published', isAdminApproved: true })
+      .select('_id sellerId name description sellingPrice discountPrice category image isVeg preparationTime rating totalOrders')
       .populate('sellerId', '_id businessName type logo rating')
       .sort({ totalOrders: -1, rating: -1 })
       .limit(10)

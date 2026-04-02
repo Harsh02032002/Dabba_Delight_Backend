@@ -432,8 +432,20 @@ exports.getPlatformConfig = async (req, res) => {
 
 exports.updatePlatformConfig = async (req, res) => {
   try {
-    const config = await PlatformConfig.findOneAndUpdate({}, req.body, { new: true, upsert: true });
-    await logAction(req, 'platform_config_updated', 'PlatformConfig', config._id, req.body);
+    let config = await PlatformConfig.findOne();
+    if (!config) config = await PlatformConfig.create({});
+    const patch = { ...req.body };
+    const numKeys = ['deliveryFee', 'platformFee', 'freeDeliveryThreshold'];
+    for (const k of numKeys) {
+      if (patch[k] === '' || patch[k] === null) {
+        delete patch[k];
+        continue;
+      }
+      if (patch[k] !== undefined) patch[k] = Number(patch[k]);
+    }
+    Object.assign(config, patch);
+    await config.save();
+    await logAction(req, 'platform_config_updated', 'PlatformConfig', config._id, patch);
     res.json({ success: true, ...config.toObject() });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };

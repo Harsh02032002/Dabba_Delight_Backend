@@ -1,7 +1,18 @@
 const router = require('express').Router();
 const sellerAuth = require('../middleware/seller.middleware');
+const adminAuth = require('../middleware/admin.middleware');
 const { s3Upload } = require('../middleware/s3-upload.middleware');
 const pc = require('../controllers/product.controller');
+
+// Helper middleware to allow both seller and admin
+const sellerOrAdminAuth = (req, res, next) => {
+  // Try seller auth first
+  sellerAuth(req, res, (err) => {
+    if (!err) return next();
+    // If seller auth fails, try admin auth
+    adminAuth(req, res, next);
+  });
+};
 
 // CRUD
 router.get('/', pc.getProducts);
@@ -41,9 +52,9 @@ router.delete('/:id/image', sellerAuth, pc.removeImage);
 router.patch('/:id/stock', sellerAuth, pc.updateStock);
 router.get('/inventory/low-stock', sellerAuth, pc.getLowStockProducts);
 
-// Metrics & Performance
-router.get('/metrics', sellerAuth, pc.getInvestorMetrics);
-router.get('/health-score', sellerAuth, pc.menuHealthScore);
+// Metrics & Performance (allow both seller and admin)
+router.get('/metrics', sellerOrAdminAuth, pc.getInvestorMetrics);
+router.get('/health-score', sellerOrAdminAuth, pc.menuHealthScore);
 router.get('/:id/performance', sellerAuth, pc.getProductPerformance);
 
 // Publish & Happy Hour

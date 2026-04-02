@@ -3,6 +3,12 @@ const adminAuth = require('../middleware/admin.middleware');
 const ac = require('../controllers/admin.controller');
 const oc = require('../controllers/order.controller');
 const gstController = require('../controllers/gstSettings.controller');
+const pc = require('../controllers/product.controller');
+
+// Menu / product approval (admin)
+router.patch('/products/:id/approve', adminAuth, pc.approveProduct);
+router.patch('/products/:id/reject', adminAuth, pc.rejectProduct);
+router.post('/products/bulk-approve', adminAuth, pc.bulkApproveProducts);
 
 // Dashboard
 router.get('/dashboard', adminAuth, ac.getDashboard);
@@ -54,12 +60,18 @@ router.put('/commission', adminAuth, ac.updateCommissionConfig);
 // GST (Old routes for backward compatibility)
 router.get('/gst', adminAuth, ac.getGSTConfig);
 router.put('/gst', adminAuth, ac.updateGSTConfig);
+router.post('/gst', adminAuth, gstController.updateGSTSettings);
 
 // GST Settings (New comprehensive GST control)
 router.get('/gst/settings', adminAuth, gstController.getGSTSettings);
 router.put('/gst/settings', adminAuth, gstController.updateGSTSettings);
+router.post('/gst/settings', adminAuth, gstController.updateGSTSettings);
 router.post('/gst/reset', adminAuth, gstController.resetGSTSettings);
 router.get('/gst/summary', adminAuth, gstController.getGSTSummary);
+
+const subController = require('../controllers/subscription.controller');
+router.get('/subscriptions', adminAuth, subController.adminListSubscriptions);
+router.get('/subscriptions/usage', adminAuth, subController.adminListUsage);
 
 // Referrals
 router.get('/referrals', adminAuth, ac.getReferrals);

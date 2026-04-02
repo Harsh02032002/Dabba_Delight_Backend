@@ -1,76 +1,179 @@
+const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Seller = require('../models/Seller');
 const User = require('../models/User');
 const { Invoice, Settlement, CommissionConfig, WalletTransaction, Notification, PlatformConfig } = require('../models/Others');
 const { generateInvoice } = require('../services/html-invoice.service');
 const { sendOrderToRiders } = require('../services/delivery-assignment.service');
+const { computeOrderGSTAndCommission, getGSTSettingsDoc } = require('../services/gst-order.service');
+const subscriptionService = require('../services/subscription.service');
 
 // POST /api/user/orders/place
 exports.placeOrder = async (req, res) => {
+  const io = req.app.get('io');
   try {
-    const { items, sellerId, deliveryAddress, paymentMethod, totalAmount, subtotal, deliveryFee, platformFee, gstAmount, discount, specialInstructions } = req.body;
+    const {
+      items,
+      sellerId,
+      deliveryAddress,
+      paymentMethod,
+      totalAmount: clientTotalRaw,
+      subtotal,
+      deliveryFee,
+      platformFee,
+      discount,
+      specialInstructions,
+    } = req.body;
 
-    // ─── Wallet Payment: check & deduct balance ──────
-    if (paymentMethod === 'wallet') {
-      const user = await User.findById(req.user._id);
-      if (!user || user.wallet < totalAmount) {
-        return res.status(400).json({ success: false, message: `Insufficient wallet balance. You have ₹${user?.wallet || 0} but need ₹${totalAmount}` });
-      }
-      // Deduct wallet
-      user.wallet -= totalAmount;
-      await user.save();
-      // Record transaction
-      await WalletTransaction.create({
-        userId: req.user._id, type: 'debit', amount: totalAmount,
-        description: `Order payment`, referenceType: 'order', balance: user.wallet,
-      });
+    const seller = await Seller.findById(sellerId);
+    if (!seller) {
+      return res.status(404).json({ success: false, message: 'Seller not found' });
     }
 
-    const order = new Order({
-      userId: req.user._id, sellerId, items, deliveryAddress, paymentMethod,
-      paymentStatus: paymentMethod === 'cod' ? 'pending' : 'paid',
-      subtotal, deliveryFee, platformFee, gstAmount, discount: discount || 0,
-      total: totalAmount, specialInstructions,
-      status: 'pending',
-      statusHistory: [{ status: 'pending', timestamp: new Date() }],
+    const settings = await getGSTSettingsDoc();
+    const platformDoc = await PlatformConfig.findOne();
+    const numSubtotal = Number(subtotal) || 0;
+    let numDel = Number(deliveryFee);
+    if (!Number.isFinite(numDel) || numDel < 0) numDel = 0;
+    if (platformDoc && platformDoc.deliveryFee != null && Number(platformDoc.deliveryFee) >= 0) {
+      numDel = Number(platformDoc.deliveryFee);
+    }
+    const numPlat =
+      platformDoc && platformDoc.platformFee != null
+        ? Number(platformDoc.platformFee)
+        : Number(platformFee) || 0;
+
+    const tax = computeOrderGSTAndCommission({
+      subtotal: numSubtotal,
+      deliveryFee: numDel,
+      platformFeeRupee: numPlat,
+      sellerState: seller.address?.state,
+      customerState: deliveryAddress?.state,
+      settings,
     });
-    await order.save();
 
-    // Populate order data for invoice generation
-    await order.populate('userId', 'name phone email');
-    await order.populate('sellerId', 'businessName type logo phone email');
+    const grandTotal = tax.customerPayable;
 
-    // Update wallet transaction with order reference
+    const session = await mongoose.startSession();
+    let order;
+    try {
+      session.startTransaction();
+      const subCredit = await subscriptionService.applySubscriptionToOrder(req.user._id, grandTotal, session);
+
+      const payableAfterSub = subCredit.payableRemainder;
+
+      if (paymentMethod === 'wallet') {
+        const user = await User.findById(req.user._id).session(session);
+        if (!user || user.wallet < payableAfterSub) {
+          await session.abortTransaction();
+          return res.status(400).json({
+            success: false,
+            message: `Insufficient wallet balance. You have ₹${user?.wallet || 0} but need ₹${payableAfterSub.toFixed(2)} after subscription credit`,
+          });
+        }
+        user.wallet -= payableAfterSub;
+        await user.save({ session });
+        await WalletTransaction.create(
+          [
+            {
+              userId: req.user._id,
+              type: 'debit',
+              amount: payableAfterSub,
+              description: `Order payment`,
+              referenceType: 'order',
+              balance: user.wallet,
+            },
+          ],
+          { session },
+        );
+      }
+
+      order = new Order({
+        userId: req.user._id,
+        sellerId,
+        items,
+        deliveryAddress,
+        paymentMethod,
+        paymentStatus: paymentMethod === 'cod' ? 'pending' : 'paid',
+        subtotal: numSubtotal,
+        deliveryFee: numDel,
+        platformFee: numPlat,
+        gstAmount: tax.gstAmount,
+        gstMode: tax.gstMode,
+        foodCgst: tax.foodCgst,
+        foodSgst: tax.foodSgst,
+        foodIgst: tax.foodIgst,
+        deliveryCgst: tax.deliveryCgst,
+        deliverySgst: tax.deliverySgst,
+        deliveryIgst: tax.deliveryIgst,
+        cgst: tax.foodCgst,
+        sgst: tax.foodSgst,
+        igst: tax.foodIgst,
+        commission: tax.commission,
+        commissionGST: tax.commissionGST,
+        subscriptionAmountUsed: subCredit.amountUsed,
+        subscriptionDaysDeducted: subCredit.daysUsed,
+        payableAfterSubscription: payableAfterSub,
+        discount: discount || 0,
+        total: grandTotal,
+        specialInstructions,
+        status: 'pending',
+        statusHistory: [{ status: 'pending', timestamp: new Date() }],
+      });
+      await order.save({ session });
+
+      await subscriptionService.recordUsage(
+        {
+          userId: req.user._id,
+          orderId: order._id,
+          amountUsed: subCredit.amountUsed,
+          daysUsed: subCredit.daysUsed,
+        },
+        session,
+      );
+
+      await session.commitTransaction();
+    } catch (innerErr) {
+      await session.abortTransaction();
+      throw innerErr;
+    } finally {
+      session.endSession();
+    }
+
     if (paymentMethod === 'wallet') {
       await WalletTransaction.findOneAndUpdate(
         { userId: req.user._id, referenceType: 'order', referenceId: null },
         { referenceId: order._id.toString(), description: `Payment for order #${order.orderNumber}` },
-        { sort: { createdAt: -1 } }
+        { sort: { createdAt: -1 } },
       );
     }
 
-    // ─── Send Notification to Restaurant (Step 2) ──────
+    const clientTotal = Number(clientTotalRaw);
+    if (clientTotal && Math.abs(clientTotal - grandTotal) > 1) {
+      console.warn(`placeOrder: client total ${clientTotal} vs server ${grandTotal} — using server amounts`);
+    }
+
+    await order.populate('userId', 'name phone email');
+    await order.populate('sellerId', 'businessName type logo phone email');
+
     try {
-      const io = req.app.get('io');
       if (io) {
-        // Create notification for seller
         await Notification.create({
           userId: sellerId,
           type: 'new_order',
           title: '🍔 New Order Received',
-          message: `Order #${order.orderNumber} - ₹${totalAmount}`,
+          message: `Order #${order.orderNumber} - ₹${grandTotal}`,
           orderId: order._id,
-          read: false
+          read: false,
         });
 
-        // Send real-time notification to seller
         io.to(`seller_${sellerId}`).emit('new_order', {
           orderId: order._id,
           orderNumber: order.orderNumber,
-          totalAmount,
+          totalAmount: grandTotal,
           customerName: order.userId?.name,
           itemCount: items?.length || 0,
-          timestamp: new Date()
+          timestamp: new Date(),
         });
 
         console.log(`✅ Notification sent to restaurant for order ${order.orderNumber}`);
@@ -79,78 +182,63 @@ exports.placeOrder = async (req, res) => {
       console.log(`❌ Failed to send notification: ${notifErr.message}`);
     }
 
-    // Generate invoice for all orders (COD and online payments)
     try {
       await generateInvoice(order);
       console.log(`✅ Invoice generated for order ${order.orderNumber}`);
     } catch (invoiceErr) {
       console.log(`❌ Invoice generation failed for order ${order.orderNumber}:`, invoiceErr.message);
-      // Don't fail the order if invoice generation fails
     }
-    
-    // Auto-update order status after preparation time
-    const preparationTime = 5 * 60 * 1000; // 5 minutes in milliseconds
-    
+
+    const preparationTime = 5 * 60 * 1000;
+    const orderRef = order;
     setTimeout(async () => {
       try {
-        console.log(`⏰ Checking order ${order.orderNumber} for automatic status update...`);
-        const updatedOrder = await Order.findById(order._id);
-        
+        const updatedOrder = await Order.findById(orderRef._id);
         if (updatedOrder) {
           if (updatedOrder.status === 'pending') {
-            console.log(`🔄 Auto-updating order ${order.orderNumber} from pending to confirmed`);
             updatedOrder.status = 'confirmed';
-            updatedOrder.statusHistory.push({ 
-              status: 'confirmed', 
-              timestamp: new Date(), 
-              updatedBy: 'system'
+            updatedOrder.statusHistory.push({
+              status: 'confirmed',
+              timestamp: new Date(),
+              updatedBy: 'system',
             });
             await updatedOrder.save();
-            
-            const io = req.app.get('io');
-            if (io) {
-              console.log(`📡 Emitting status update to user_${order.userId} and seller_${sellerId}`);
-              io.to(`user_${order.userId}`).emit('order_status_update', { 
-                orderId: order._id, 
+            const ioLater = req.app.get('io');
+            if (ioLater) {
+              ioLater.to(`user_${orderRef.userId}`).emit('order_status_update', {
+                orderId: orderRef._id,
                 status: 'confirmed',
-                message: 'Your order has been confirmed and is being prepared!'
+                message: 'Your order has been confirmed and is being prepared!',
               });
-              io.to(`seller_${sellerId}`).emit('order_confirmed', { 
+              ioLater.to(`seller_${sellerId}`).emit('order_confirmed', {
                 order: updatedOrder,
-                message: `Order #${order.orderNumber} is ready for preparation!`
+                message: `Order #${orderRef.orderNumber} is ready for preparation!`,
               });
             }
-            console.log(`✅ Order ${order.orderNumber} auto-confirmed after preparation time`);
-          } else {
-            console.log(`ℹ️ Order ${order.orderNumber} already updated to ${updatedOrder.status}, skipping auto-confirmation`);
           }
-        } else {
-          console.log(`❌ Order ${order.orderNumber} not found for status update`);
         }
       } catch (err) {
-        console.log(`❌ Auto-confirmation failed for order ${order.orderNumber}:`, err.message);
-        // Try to emit error notification
-        const io = req.app.get('io');
-        if (io) {
-          io.to(`seller_${sellerId}`).emit('order_error', { 
-            orderId: order._id,
-            error: 'Failed to auto-confirm order',
-            message: err.message
-          });
-        }
+        console.log(`❌ Auto-confirmation failed for order ${orderRef.orderNumber}:`, err.message);
       }
     }, preparationTime);
-    
-    const io = req.app.get('io');
+
     if (io) {
-      console.log(`📡 Emitting new_order to seller_${sellerId}`);
-      io.to(`seller_${sellerId}`).emit('new_order', { 
+      io.to(`seller_${sellerId}`).emit('new_order', {
         order: order,
-        message: `New order #${order.orderNumber} received!`
+        message: `New order #${order.orderNumber} received!`,
       });
     }
-    
-    res.status(201).json({ success: true, order });
+
+    res.status(201).json({
+      success: true,
+      order,
+      billing: {
+        grandTotal,
+        subscriptionUsed: order.subscriptionAmountUsed,
+        daysDeducted: order.subscriptionDaysDeducted,
+        payableAfterSubscription: order.payableAfterSubscription,
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -484,6 +572,36 @@ exports.updateOrderStatus = async (req, res) => {
     await order.save();
     if (io) io.to(`user_${order.userId}`).emit('order_status_update', { orderId: order._id, status });
     res.json({ success: true, order });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// PATCH /api/seller/orders/bulk/status
+exports.bulkUpdateOrderStatus = async (req, res) => {
+  try {
+    const { ids, status } = req.body;
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ success: false, message: 'Order IDs required' });
+    }
+    if (!status) {
+      return res.status(400).json({ success: false, message: 'Status required' });
+    }
+
+    const result = await Order.updateMany(
+      { _id: { $in: ids }, sellerId: req.user.sellerId },
+      { status, updatedAt: new Date() }
+    );
+
+    // Emit status updates via socket
+    const io = req.app.get('io');
+    if (io) {
+      ids.forEach(orderId => {
+        io.emit('order_status_update', { orderId, status });
+      });
+    }
+
+    res.json({ success: true, message: `${result.modifiedCount} orders updated to ${status}` });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

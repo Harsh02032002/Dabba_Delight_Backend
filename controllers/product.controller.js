@@ -16,6 +16,8 @@ exports.getProducts = async (req, res) => {
     if (isVeg === 'true') filter.isVeg = true;
     if (isAvailable !== undefined) filter.isAvailable = isAvailable === 'true';
     if (sellerId) filter.sellerId = sellerId;
+    if (req.query.pendingApproval === 'true') filter.isAdminApproved = false;
+    if (req.query.approvedOnly === 'true') filter.isAdminApproved = true;
     filter.status = { $ne: 'archived' };
 
     const products = await Product.find(filter)
@@ -394,6 +396,53 @@ exports.setHappyHourDiscount = async (req, res) => {
     if (productIds && productIds.length) filter._id = { $in: productIds };
     await Product.updateMany(filter, { happyHourDiscount: discount, happyHourStart: startTime, happyHourEnd: endTime });
     res.json({ success: true, message: 'Happy hour set' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// ═══ ADMIN APPROVAL ENDPOINTS ═══
+
+// PATCH /api/products/:id/approve — admin approves product
+exports.approveProduct = async (req, res) => {
+  try {
+    const product = await Product.findByIdAndUpdate(
+      req.params.id,
+      { isAdminApproved: true, adminApprovalDate: new Date(), adminApprovalBy: req.user._id },
+      { new: true }
+    );
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+    res.json({ success: true, message: 'Product approved by admin', product });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// PATCH /api/products/:id/reject — admin rejects product
+exports.rejectProduct = async (req, res) => {
+  try {
+    const { reason } = req.body;
+    const product = await Product.findByIdAndUpdate(
+      req.params.id,
+      { isAdminApproved: false, adminApprovalDate: null, adminApprovalBy: null },
+      { new: true }
+    );
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+    res.json({ success: true, message: 'Product rejected', reason, product });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// POST /api/products/bulk/approve — admin bulk approves products
+exports.bulkApproveProducts = async (req, res) => {
+  try {
+    const { ids } = req.body;
+    const result = await Product.updateMany(
+      { _id: { $in: ids } },
+      { isAdminApproved: true, adminApprovalDate: new Date(), adminApprovalBy: req.user._id }
+    );
+    res.json({ success: true, message: `${result.modifiedCount} products approved` });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

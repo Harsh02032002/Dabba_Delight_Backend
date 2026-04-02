@@ -11,12 +11,14 @@ exports.getGSTSettings = async (req, res) => {
         foodGSTEnabled: false,
         foodCGSTRate: 0,
         foodSGSTRate: 0,
+        foodIGSTRate: 0,
         platformGSTEnabled: false,
         platformCommissionRate: 0,
         platformGSTRate: 0,
         deliveryGSTEnabled: false,
         deliveryCGSTRate: 0,
         deliverySGSTRate: 0,
+        deliveryIGSTRate: 0,
         gstApplicable: false,
         defaultGSTIN: "",
         invoicePrefix: "DN"
@@ -38,88 +40,86 @@ exports.getGSTSettings = async (req, res) => {
   }
 };
 
-// Update GST settings
+// Update GST settings (partial updates allowed; aliases: foodGST, commissionRate, commissionGST)
 exports.updateGSTSettings = async (req, res) => {
   try {
-    const {
-      foodGSTEnabled,
-      foodCGSTRate,
-      foodSGSTRate,
-      platformGSTEnabled,
-      platformCommissionRate,
-      platformGSTRate,
-      deliveryGSTEnabled,
-      deliveryCGSTRate,
-      deliverySGSTRate,
-      gstApplicable,
-      defaultGSTIN,
-      invoicePrefix
-    } = req.body;
+    const body = { ...req.body };
 
-    // Validate GST rates
-    if (foodGSTEnabled && (foodCGSTRate < 0 || foodSGSTRate < 0)) {
-      return res.status(400).json({
-        success: false,
-        message: "Food GST rates cannot be negative"
-      });
+    if (body.foodGST != null && body.foodGST !== '') {
+      const fg = Number(body.foodGST);
+      if (Number.isFinite(fg)) {
+        body.foodCGSTRate = fg / 2;
+        body.foodSGSTRate = fg / 2;
+      }
     }
-    
-    if (platformGSTEnabled && (platformCommissionRate < 0 || platformGSTRate < 0)) {
-      return res.status(400).json({
-        success: false,
-        message: "Platform GST rates cannot be negative"
-      });
+    if (body.commissionRate != null && body.commissionRate !== '') {
+      body.platformCommissionRate = Number(body.commissionRate);
     }
-    
-    if (deliveryGSTEnabled && (deliveryCGSTRate < 0 || deliverySGSTRate < 0)) {
-      return res.status(400).json({
-        success: false,
-        message: "Delivery GST rates cannot be negative"
-      });
+    if (body.commissionGST != null && body.commissionGST !== '') {
+      body.platformGSTRate = Number(body.commissionGST);
     }
 
-    // Validate GSTIN format if provided
-    if (defaultGSTIN && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[0-9]{1}[A-Z]{1}[0-9A-Z]{1}$/.test(defaultGSTIN)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid GSTIN format"
-      });
-    }
-
-    // Update or create settings
     let settings = await GSTSettings.findOne();
-    
-    if (!settings) {
-      settings = new GSTSettings();
+    if (!settings) settings = new GSTSettings();
+
+    const keys = [
+      'foodGSTEnabled',
+      'foodCGSTRate',
+      'foodSGSTRate',
+      'foodIGSTRate',
+      'platformGSTEnabled',
+      'platformCommissionRate',
+      'platformGSTRate',
+      'deliveryGSTEnabled',
+      'deliveryCGSTRate',
+      'deliverySGSTRate',
+      'deliveryIGSTRate',
+      'gstApplicable',
+      'defaultGSTIN',
+      'invoicePrefix',
+    ];
+
+    for (const k of keys) {
+      if (body[k] !== undefined) settings[k] = body[k];
     }
 
-    // Update all fields
-    settings.foodGSTEnabled = foodGSTEnabled ?? false;
-    settings.foodCGSTRate = foodCGSTRate ?? 0;
-    settings.foodSGSTRate = foodSGSTRate ?? 0;
-    settings.platformGSTEnabled = platformGSTEnabled ?? false;
-    settings.platformCommissionRate = platformCommissionRate ?? 0;
-    settings.platformGSTRate = platformGSTRate ?? 0;
-    settings.deliveryGSTEnabled = deliveryGSTEnabled ?? false;
-    settings.deliveryCGSTRate = deliveryCGSTRate ?? 0;
-    settings.deliverySGSTRate = deliverySGSTRate ?? 0;
-    settings.gstApplicable = gstApplicable ?? false;
-    settings.defaultGSTIN = defaultGSTIN || "";
-    settings.invoicePrefix = invoicePrefix || "DN";
+    if (body.defaultGSTIN === '') settings.defaultGSTIN = '';
+
+    if (
+      settings.foodGSTEnabled &&
+      (Number(settings.foodCGSTRate) < 0 || Number(settings.foodSGSTRate) < 0)
+    ) {
+      return res.status(400).json({ success: false, message: 'Food GST rates cannot be negative' });
+    }
+
+    if (settings.platformGSTEnabled && (settings.platformCommissionRate < 0 || settings.platformGSTRate < 0)) {
+      return res.status(400).json({ success: false, message: 'Platform GST rates cannot be negative' });
+    }
+
+    if (settings.deliveryGSTEnabled && (settings.deliveryCGSTRate < 0 || settings.deliverySGSTRate < 0 || Number(settings.deliveryIGSTRate) < 0)) {
+      return res.status(400).json({ success: false, message: 'Delivery GST rates cannot be negative' });
+    }
+    if (settings.foodGSTEnabled && Number(settings.foodIGSTRate) < 0) {
+      return res.status(400).json({ success: false, message: 'Food IGST rate cannot be negative' });
+    }
+
+    if (settings.defaultGSTIN && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[0-9]{1}[A-Z]{1}[0-9A-Z]{1}$/.test(settings.defaultGSTIN)) {
+      return res.status(400).json({ success: false, message: 'Invalid GSTIN format' });
+    }
 
     await settings.save();
 
     res.json({
       success: true,
       data: settings,
-      message: "GST settings updated successfully"
+      message: 'GST settings updated successfully',
     });
   } catch (error) {
     console.error('Error updating GST settings:', error);
     res.status(500).json({
       success: false,
-      message: "Failed to update GST settings",
-      error: error.message
+      message: 'Failed to update GST settings',
+      error: error.message,
     });
   }
 };

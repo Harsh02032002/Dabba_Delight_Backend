@@ -2,6 +2,7 @@ const router = require('express').Router();
 const auth = require('../middleware/auth.middleware');
 const uc = require('../controllers/user.controller');
 const lc = require('../controllers/location.controller');
+const subController = require('../controllers/subscription.controller');
 
 // Sellers & Menu (public)
 router.get('/sellers', uc.getSellers);
@@ -18,6 +19,10 @@ router.delete('/address/:id', auth, lc.deleteAddress);
 router.patch('/address/:id/set-default', auth, lc.setDefaultAddress);
 router.get('/sellers/nearby', auth, lc.getNearbySellers);
 router.post('/reverse-geocode', auth, lc.reverseGeocode);
+
+// Dabba Express — subscriptions
+router.get('/subscriptions/active', auth, subController.getActiveForUser);
+router.post('/subscriptions/purchase', auth, subController.purchase);
 
 // Wallet
 router.post('/wallet/topup', auth, uc.topupWallet);

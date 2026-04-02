@@ -264,6 +264,11 @@ app.use(cors({
   credentials: true 
 }));
 
+// ─── PUBLIC ROUTES (Must be before other routes) ─────
+const publicCtrl = require('./controllers/public.controller');
+app.get('/api/public/gst-settings', publicCtrl.getPublicGSTSettings);
+app.get('/api/public/platform-config', publicCtrl.getPublicPlatformConfig);
+
 // Request logging for performance monitoring
 app.use((req, res, next) => {
   const start = Date.now();

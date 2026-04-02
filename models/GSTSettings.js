@@ -21,6 +21,14 @@ const gstSettingsSchema = new mongoose.Schema({
     max: 100,
     description: "SGST rate for food items in percentage"
   },
+  /** Inter-state food GST % (IGST). If 0, IGST uses foodCGSTRate + foodSGSTRate. */
+  foodIGSTRate: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 100,
+    description: "IGST rate for food (inter-state); 0 = sum of CGST+SGST"
+  },
   
   // Platform Commission GST
   platformGSTEnabled: {
@@ -62,6 +70,13 @@ const gstSettingsSchema = new mongoose.Schema({
     min: 0,
     max: 100,
     description: "SGST rate for delivery charges in percentage"
+  },
+  deliveryIGSTRate: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 100,
+    description: "IGST on delivery (inter-state); 0 = sum of delivery CGST+SGST"
   },
   
   // General Settings
@@ -117,16 +132,19 @@ gstSettingsSchema.pre('save', function(next) {
     this.deliveryGSTEnabled = false;
     this.foodCGSTRate = 0;
     this.foodSGSTRate = 0;
+    this.foodIGSTRate = 0;
     this.platformCommissionRate = 0;
     this.platformGSTRate = 0;
     this.deliveryCGSTRate = 0;
     this.deliverySGSTRate = 0;
+    this.deliveryIGSTRate = 0;
   }
   
   // If specific GST is disabled, ensure its rates are 0
   if (!this.foodGSTEnabled) {
     this.foodCGSTRate = 0;
     this.foodSGSTRate = 0;
+    this.foodIGSTRate = 0;
   }
   
   if (!this.platformGSTEnabled) {
@@ -137,6 +155,7 @@ gstSettingsSchema.pre('save', function(next) {
   if (!this.deliveryGSTEnabled) {
     this.deliveryCGSTRate = 0;
     this.deliverySGSTRate = 0;
+    this.deliveryIGSTRate = 0;
   }
   
   next();
@@ -186,12 +205,14 @@ gstSettingsSchema.methods.resetToDefaults = function() {
   this.foodGSTEnabled = false;
   this.foodCGSTRate = 0;
   this.foodSGSTRate = 0;
+  this.foodIGSTRate = 0;
   this.platformGSTEnabled = false;
   this.platformCommissionRate = 0;
   this.platformGSTRate = 0;
   this.deliveryGSTEnabled = false;
   this.deliveryCGSTRate = 0;
   this.deliverySGSTRate = 0;
+  this.deliveryIGSTRate = 0;
   this.gstApplicable = false;
   this.defaultGSTIN = "";
   this.invoicePrefix = "DN";
