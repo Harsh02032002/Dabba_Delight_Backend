@@ -348,8 +348,8 @@ exports.resendVerificationCode = async (req, res) => {
 
     // Generate new verification code
     const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
-    user.verificationCode = verificationCode;
-    user.verificationCodeExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+    user.emailVerificationCode = verificationCode;
+    user.emailVerificationExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
     await user.save();
 
     // Send verification email
