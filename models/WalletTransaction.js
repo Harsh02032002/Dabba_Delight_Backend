@@ -13,4 +13,4 @@ const walletTransactionSchema = new mongoose.Schema({
   razorpaySignature: { type: String },
 }, { timestamps: true });
 
-module.exports = mongoose.model('WalletTransaction', walletTransactionSchema);
+module.exports = mongoose.models.WalletTransaction || mongoose.model('WalletTransaction', walletTransactionSchema);

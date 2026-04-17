@@ -517,23 +517,31 @@ exports.generateInvoice = async (order) => {
   }
 
   const invoiceNumber = await generateInvoiceNumber();
+  
+  // Validate and fix items to prevent NaN
+  const validatedItems = (order.items || []).map(item => {
+    const price = Number(item.price) || 0;
+    const quantity = Number(item.quantity) || 0;
+    return {
+      name: item.name || 'Item',
+      quantity: quantity,
+      price: price,
+      total: price * quantity
+    };
+  }).filter(item => item.quantity > 0); // Remove items with 0 quantity
+  
   const invoice = new Invoice({
     invoiceNumber, 
     orderId: order._id, 
     userId: order.userId, 
     sellerId: order.sellerId,
-    items: (order.items || []).map(item => ({ 
-      name: item.name, 
-      quantity: item.quantity, 
-      price: item.price, 
-      total: item.price * item.quantity 
-    })),
-    subtotal: order.subtotal || 0, 
-    tax: order.gstAmount || 0, 
-    deliveryFee: order.deliveryFee || 0,
-    platformFee: order.platformFee || 0, 
-    discount: order.discount || 0,
-    totalAmount: order.total, 
+    items: validatedItems,
+    subtotal: Number(order.subtotal) || 0, 
+    tax: Number(order.gstAmount) || 0, 
+    deliveryFee: Number(order.deliveryFee) || 0,
+    platformFee: Number(order.platformFee) || 0, 
+    discount: Number(order.discount) || 0,
+    totalAmount: Number(order.total) || 0, 
     paymentMethod: order.paymentMethod, 
     paymentStatus: order.paymentStatus,
   });

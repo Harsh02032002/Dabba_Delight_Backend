@@ -7,6 +7,7 @@ const { generateInvoice } = require('../services/html-invoice.service');
 const { sendOrderToRiders } = require('../services/delivery-assignment.service');
 const { computeOrderGSTAndCommission, getGSTSettingsDoc } = require('../services/gst-order.service');
 const subscriptionService = require('../services/subscription.service');
+const walletController = require('../controllers/wallet.controller');
 
 // POST /api/user/orders/place
 exports.placeOrder = async (req, res) => {
@@ -54,11 +55,42 @@ exports.placeOrder = async (req, res) => {
 
     const grandTotal = tax.customerPayable;
 
-    const session = await mongoose.startSession();
+    const session = await mongoose.startSession({ defaultTransactionOptions: { readPreference: 'primary' } });
     let order;
     try {
       session.startTransaction();
-      const subCredit = await subscriptionService.applySubscriptionToOrder(req.user._id, grandTotal, session);
+      
+      // Check for seller-specific subscription
+      console.log('🔍 Checking subscription for user:', req.user._id, 'seller:', sellerId);
+      const subscription = await subscriptionService.getActiveSubscriptionForSeller(req.user._id, sellerId, session);
+      console.log('📋 Subscription found:', subscription ? 'YES' : 'NO', subscription ? { remaining: subscription.remaining_amount, days: subscription.remaining_days } : null);
+      
+      let subCredit = { creditApplied: 0, payableRemainder: grandTotal, subscription: null };
+      
+      if (subscription) {
+        // User has subscription for this seller
+        console.log('✅ User has active subscription');
+        if (subscription.remaining_amount >= grandTotal) {
+          // Full amount can be covered by subscription
+          console.log('💰 Full coverage - order total:', grandTotal, 'subscription remaining:', subscription.remaining_amount);
+          subCredit = await subscriptionService.applySubscriptionToOrderWithSub(subscription, grandTotal, { sellerId }, session);
+          console.log('✅ Subscription credit applied:', subCredit);
+        } else if (subscription.remaining_amount > 0) {
+          // Partial coverage - subscription has some amount but not enough
+          console.log('💰 Partial coverage - subscription remaining:', subscription.remaining_amount, 'order total:', grandTotal);
+          subCredit = await subscriptionService.applySubscriptionToOrderWithSub(subscription, grandTotal, { sellerId }, session);
+          console.log('✅ Subscription credit applied:', subCredit);
+        } else {
+          // No remaining amount in subscription
+          console.log('❌ No remaining balance in subscription');
+          return res.status(400).json({
+            success: false,
+            message: `Your subscription for ${seller.businessName} has no remaining balance. Please renew your subscription.`,
+          });
+        }
+      } else {
+        console.log('ℹ️ No active subscription found for this seller');
+      }
 
       const payableAfterSub = subCredit.payableRemainder;
 
@@ -131,6 +163,30 @@ exports.placeOrder = async (req, res) => {
         },
         session,
       );
+
+      // Credit subscription amount used to admin wallet
+      if (subCredit.amountUsed > 0) {
+        const adminUser = await User.findOne({ role: 'admin' }).session(session);
+        if (adminUser) {
+          await User.findByIdAndUpdate(
+            adminUser._id, 
+            { $inc: { wallet: subCredit.amountUsed } },
+            { session }
+          );
+
+          await WalletTransaction.create([{
+            userId: adminUser._id,
+            type: 'credit',
+            amount: subCredit.amountUsed,
+            description: `Subscription amount from order #${order.orderNumber}`,
+            referenceType: 'order',
+            referenceId: order._id.toString(),
+            balance: (adminUser.wallet || 0) + subCredit.amountUsed,
+          }], { session });
+
+          console.log(`💰 Subscription amount ₹${subCredit.amountUsed} credited to admin wallet`);
+        }
+      }
 
       await session.commitTransaction();
     } catch (innerErr) {
@@ -469,68 +525,34 @@ exports.updateOrderStatus = async (req, res) => {
       order.actualDelivery = new Date();
       if (order.paymentMethod === 'cod') { order.paymentStatus = 'paid'; await generateInvoice(order); }
 
-      // Auto-create settlement record
+      // NEW WALLET SYSTEM: Process payment through wallet controller
       try {
-        const seller = await Seller.findById(order.sellerId);
-        const platformConfig = await PlatformConfig.findOne();
-        const commConfig = await CommissionConfig.findOne();
-        const commissionRate = seller?.commissionRate || commConfig?.defaultRate || 15;
-        const platformFeeRate = platformConfig?.platformFee || 5;
+        console.log('💰 Processing order payment through wallet system:', order.orderNumber);
         
-        const grossAmount = order.total;
-        const commission = Math.round(grossAmount * commissionRate / 100);
-        const platformFee = Math.round(grossAmount * platformFeeRate / 100);
-        const gst = Math.round(commission * 0.18); // 18% GST on commission
-        const tds = Math.round(grossAmount * 0.01); // 1% TDS
-        const netAmount = grossAmount - commission - platformFee - gst - tds;
-
-        // Update seller wallet with net amount
-        await Seller.findByIdAndUpdate(order.sellerId, { 
-          $inc: { wallet: netAmount },
-          $inc: { totalOrders: 1, totalRevenue: grossAmount }
-        });
-
-        // Create seller wallet transaction
-        await WalletTransaction.create({
-          sellerId: order.sellerId,
-          type: 'credit',
-          amount: netAmount,
-          description: `Order payment for #${order.orderNumber} (after platform fee & commission)`,
-          referenceType: 'order',
-          referenceId: order._id.toString(),
-          balance: (seller?.wallet || 0) + netAmount,
-        });
-
-        // Find admin user (assuming first admin user)
-        const adminUser = await User.findOne({ role: 'admin' });
-        if (adminUser) {
-          // Update admin wallet with platform fee
-          await User.findByIdAndUpdate(adminUser._id, { 
-            $inc: { wallet: platformFee }
+        // Only process if payment was made (not COD pending)
+        if (order.paymentStatus === 'paid') {
+          await walletController.processOrderPayment({
+            orderId: order._id,
+            userId: order.userId,
+            sellerId: order.sellerId,
+            totalAmount: order.total,
+            paymentMethod: order.paymentMethod,
+            orderNumber: order.orderNumber,
+            itemsCount: order.items?.length || 0
           });
-
-          // Create admin wallet transaction for platform fee
-          await WalletTransaction.create({
-            userId: adminUser._id,
-            type: 'credit',
-            amount: platformFee,
-            description: `Platform fee from order #${order.orderNumber}`,
-            referenceType: 'order',
-            referenceId: order._id.toString(),
-            balance: (adminUser.wallet || 0) + platformFee,
-          });
-
-          console.log(`💰 Platform fee ₹${platformFee} credited to admin wallet`);
+          
+          console.log('✅ Order payment processed through wallet system');
         }
+      } catch (walletError) {
+        console.error('❌ Wallet processing error:', walletError);
+        // Don't fail the order update if wallet processing fails
+        // It can be reconciled later
+      }
 
-        await Settlement.create({
-          sellerId: order.sellerId,
-          period: { startDate: order.createdAt, endDate: new Date() },
-          totalOrders: 1, grossAmount, commission, platformFee, gst, tds, netAmount,
-          status: 'pending', orderIds: [order._id],
-        });
-
-        console.log(`💰 Seller wallet credited with ₹${netAmount} (platform fee ₹${platformFee} deducted)`);
+      // Legacy settlement code removed - now handled by wallet system above
+      try {
+        // Keep any additional post-delivery logic here if needed
+        console.log('✅ Order delivered and processed through wallet system');
 
         // ─── Cashback to customer (2% of order total) ──────
         try {

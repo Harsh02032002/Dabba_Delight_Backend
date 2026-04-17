@@ -37,7 +37,7 @@ if (!process.env.JWT_SECRET && fs.existsSync(envPath)) {
 
 // Set fallback values from memory if not loaded
 if (!process.env.MONGO_URI) {
-  process.env.MONGO_URI = 'mongodb+srv://Harsh:Harsh%402925@cluster0.hddqr9e.mongodb.net/Dabbanation_db?retryWrites=true&w=majority&appName=Cluster0';
+  process.env.MONGO_URI = 'mongodb+srv://Harsh:Harsh%402925@cluster0.hddqr9e.mongodb.net/Dabbanation_db?retryWrites=true&w=majority&appName=Cluster0&readPreference=primary';
   console.log('🔄 Using fallback MONGO_URI');
 }
 
@@ -279,8 +279,41 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
+// Body parsing middleware
+const jsonParser = express.json({ limit: '10mb' });
+const urlencodedParser = express.urlencoded({ extended: true });
+
+// Routes that need file upload (no JSON parsing)
+app.use('/api/subscriptions', (req, res, next) => {
+  console.log('=== SUBSCRIPTION ROUTE HIT ===');
+  console.log('Method:', req.method);
+  console.log('Path:', req.path);
+  console.log('Content-Type:', req.headers['content-type']);
+  
+  // Apply JSON parser for non-file-upload requests
+  const contentType = req.headers['content-type'] || '';
+  if (contentType.includes('multipart/form-data')) {
+    return next();
+  }
+  jsonParser(req, res, next);
+}, require('./routes/subscription.routes'));
+
+// Body parsing middleware for other routes
+app.use((req, res, next) => {
+  const contentType = req.headers['content-type'] || '';
+  if (contentType.includes('multipart/form-data')) {
+    return next();
+  }
+  jsonParser(req, res, next);
+});
+
+app.use((req, res, next) => {
+  const contentType = req.headers['content-type'] || '';
+  if (contentType.includes('multipart/form-data')) {
+    return next();
+  }
+  urlencodedParser(req, res, next);
+});
 
 // Static files for uploads
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -304,6 +337,7 @@ app.use('/api/seller', require('./routes/seller.routes'));
 app.use('/api/seller/profile', require('./routes/seller.profile.routes'));
 app.use('/api/admin', require('./routes/admin.routes'));
 app.use('/api/admin', require('./routes/warehouse.routes'));
+app.use('/api/wallet', require('./routes/wallet.routes'));
 app.use('/api', require('./routes/seed.routes'));
 
 // ─── Health Check ───────────────────────────────────
@@ -314,6 +348,7 @@ app.get('/api/health', (req, res) => {
 // ─── Error Handler ──────────────────────────────────
 app.use((err, req, res, next) => {
   console.error('Error:', err.message);
+  console.error('Stack:', err.stack);
   res.status(err.status || 500).json({
     success: false,
     message: err.message || 'Internal Server Error',

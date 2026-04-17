@@ -6,6 +6,7 @@ const gstController = require('../controllers/gstSettings.controller');
 const pc = require('../controllers/product.controller');
 
 // Menu / product approval (admin)
+router.get('/products', adminAuth, pc.getProducts);
 router.patch('/products/:id/approve', adminAuth, pc.approveProduct);
 router.patch('/products/:id/reject', adminAuth, pc.rejectProduct);
 router.post('/products/bulk-approve', adminAuth, pc.bulkApproveProducts);

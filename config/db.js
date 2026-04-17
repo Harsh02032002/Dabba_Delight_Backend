@@ -19,7 +19,7 @@ const connectDB = async () => {
     if (!mongoUri) {
       console.log('⚠️  MONGO_URI not found, using fallback URI');
       // Emergency fallback with correct encoding
-      mongoUri = "mongodb+srv://Harsh:Harsh%402925@cluster0.hddqr9e.mongodb.net/Dabbanation_db?retryWrites=true&w=majority&appName=Cluster0";
+      mongoUri = "mongodb+srv://Harsh:Harsh%402925@cluster0.hddqr9e.mongodb.net/Dabbanation_db?retryWrites=true&w=majority&appName=Cluster0&readPreference=primary";
     }
     
     // Fix double encoding issue
@@ -43,7 +43,7 @@ const connectDB = async () => {
       maxIdleTimeMS: 30000,         // Max idle time before closing connection
       waitQueueTimeoutMS: 5000,       // Queue timeout
       // Performance optimizations
-      readPreference: 'primaryPreferred',  // Read from primary, fallback to secondary
+      readPreference: 'primary',  // Must be 'primary' for transactions to work
     });
     
     console.log(`✅ MongoDB connected: ${conn.connection.host}`);

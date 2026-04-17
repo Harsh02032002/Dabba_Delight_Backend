@@ -10,6 +10,8 @@ import userPublicRoutes from "./modules/user/user.public.routes.js";
 import notificationRoutes from "./modules/notification/notification.routes.js";
 import paymentRoutes from "./modules/payment/payment.routes.js";
 import adminRoutes from "./modules/admin/admin.routes.js";
+import subscriptionRoutes from "./routes/subscription.routes.js";
+import walletRoutes from "./routes/wallet.routes.js";
 import path from "path";
 
 const app = express();
@@ -22,12 +24,15 @@ app.get("/", (req, res) => {
 app.use(
   cors({
     origin: [
-      "http://localhost:8080", // tera frontend port (jo tune bola)
-      "http://localhost:5173", // default Vite port (safety ke liye)
-      "http://localhost:3000", // agar kabhi Create React App use kiya to
+      "http://localhost:8080",
+      "http://localhost:8083", // Rider app port
+      "http://localhost:5173",
+      "http://localhost:3000",
       "http://56.228.4.127",
+      "https://dabbanation.in",
+      "https://www.dabbanation.in",
     ],
-    credentials: true, // cookies / auth headers ke liye
+    credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   }),
@@ -53,6 +58,10 @@ app.use("/api/notifications", notificationRoutes);
 // Payment (Stripe & Razorpay)
 app.use("/api/payments", paymentRoutes);
 app.use("/api/admin", adminRoutes);
+// Subscription routes
+app.use("/api/subscriptions", subscriptionRoutes);
+// Wallet routes
+app.use("/api/wallet", walletRoutes);
 // Static files (uploads folder)
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 

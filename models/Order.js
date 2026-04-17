@@ -5,7 +5,11 @@ const orderSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   sellerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Seller', required: true },
   items: [{
-    menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+    menuItemId: { 
+      type: mongoose.Schema.Types.ObjectId, 
+      ref: 'Product', 
+      set: v => v.startsWith('custom-') ? new mongoose.Types.ObjectId() : v 
+    },
     name: String,
     sellingPrice: Number,
     quantity: Number,
@@ -51,7 +55,7 @@ const orderSchema = new mongoose.Schema({
   payableAfterSubscription: { type: Number, default: 0 },
   discount: { type: Number, default: 0 },
   total: Number,
-  paymentMethod: { type: String, enum: ['razorpay', 'cod', 'wallet', 'stripe'] },
+  paymentMethod: { type: String, enum: ['razorpay', 'cod', 'wallet', 'stripe', 'subscription'] },
   paymentStatus: { type: String, enum: ['pending', 'paid', 'failed', 'refunded'], default: 'pending' },
   paymentId: String,
   specialInstructions: String,
