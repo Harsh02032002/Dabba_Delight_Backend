@@ -9,37 +9,134 @@ const generateInvoiceNumber = async () => {
   const dateStr = date.toISOString().slice(0, 10).replace(/-/g, '');
   const startOfDay = new Date(date); startOfDay.setHours(0, 0, 0, 0);
   const endOfDay = new Date(date); endOfDay.setHours(23, 59, 59, 999);
+  
+  // Use a more unique method than just count
   const count = await Invoice.countDocuments({ createdAt: { $gte: startOfDay, $lte: endOfDay } });
-  return `DN-INV-${dateStr}-${String(count + 1).padStart(4, '0')}`;
+  const random = Math.random().toString(36).substring(2, 5).toUpperCase(); // 3 random chars
+  return `DN-INV-${dateStr}-${String(count + 1).padStart(4, '0')}-${random}`;
 };
 
 const getInvoiceHTML = (order, invoiceNumber) => {
   // Fix logo paths for Puppeteer
-  const sellerLogo = order.sellerId?.logo ? 
-    (order.sellerId.logo.startsWith('http') ? order.sellerId.logo : `http://localhost:5000${order.sellerId.logo}`) : 
-    'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIHZpZXdCb3g9IjAgMCA2MCA2MCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjYwIiBoZWlnaHQ9IjYwIiByeD0iMTAiIGZpbGw9IiNFMjM3NDQiLz4KPHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHZpZXdCb3g9IjAgMCA0MCA0MCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEwIDVIMjBWMjBIMTBWNVoiIGZpbGw9IndoaXRlIi8+CjxwYXRoIGQ9Ik0xNSAxMGgyMHYxMEgxNVYxMHoiIGZpbGw9IndoaXRlIi8+CjxwYXRoIGQ9Ik0zMCAxMGgxMHYxMEgzMFYxMHoiIGZpbGw9IndoaXRlIi8+Cjwvc3ZnPgo8L3N2Zz4KPC9zdmc+';
+  const backendUrl = process.env.BACKEND_URL || 'http://localhost:5000';
   
   const sellerName = order.sellerId?.businessName || 'Restaurant';
   const sellerType = order.sellerId?.type === 'home_chef' ? 'Home Chef' : 'Restaurant';
+  const sellerGST = (order.sellerId?.gstNumber && order.sellerId?.gstNumber !== 'N/A' && order.sellerId?.gstNumber.trim() !== '') ? order.sellerId.gstNumber : null;
+  const sellerFSSAI = (order.sellerId?.fssaiLicense && order.sellerId?.fssaiLicense !== 'N/A' && order.sellerId?.fssaiLicense.trim() !== '') ? order.sellerId.fssaiLicense : null;
+  const sellerAddress = order.sellerId?.address?.fullAddress || 
+    `${order.sellerId?.address?.street || ''}, ${order.sellerId?.address?.city || ''}`.trim() || 'N/A';
+    
   const customerName = order.userId?.name || 'Customer';
   const customerPhone = order.userId?.phone || 'N/A';
-  const customerAddress = order.deliveryAddress?.fullAddress || 'N/A';
-  const orderDate = new Date(order.createdAt).toLocaleDateString('en-IN');
-  
-  console.log('🔍 Logo paths:', {
-    sellerLogo: sellerLogo,
-    sellerName: sellerName,
-    hasLogo: !!order.sellerId?.logo
+  const customerAddress = order.deliveryAddress?.fullAddress || 
+    `${order.deliveryAddress?.street || ''}, ${order.deliveryAddress?.city || ''}`.trim() || 'N/A';
+    
+  const sellerLogo = order.sellerId?.logo ? 
+    (order.sellerId.logo.startsWith('http') ? order.sellerId.logo : 
+      (order.sellerId.logo.startsWith('/') ? `${backendUrl}${order.sellerId.logo}` : `${backendUrl}/${order.sellerId.logo}`)) : 
+    'https://cdn-icons-png.flaticon.com/512/1046/1046771.png'; // Better default seller icon
+    
+  const orderDate = new Date(order.createdAt).toLocaleDateString('en-IN', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric'
   });
   
-  const itemsHTML = (order.items || []).map((item, index) => `
+  let dabbaLogoUrl = '';
+  try {
+    let foundPath = null;
+    const possiblePaths = [
+      path.resolve(process.cwd(), 'logo.png'), 
+      path.resolve(process.cwd(), 'public', 'assets', 'logo.png'),
+      path.resolve(__dirname, '..', 'public', 'assets', 'logo.png'),
+      'e:\\Dabbanation\\Dabba_Delight_Backend\\logo.png'
+    ];
+
+    console.log('--- LOGO SEARCH START ---');
+    for (const p of possiblePaths) {
+      const exists = fs.existsSync(p);
+      console.log(`🔍 Checking: ${p} -> ${exists ? 'EXISTS ✅' : 'MISSING ❌'}`);
+      if (exists) {
+        foundPath = p;
+        break;
+      }
+    }
+
+    if (!foundPath) {
+      console.log('🔄 Starting recursive search for logo.png in backend root...');
+      try {
+        const rootDir = 'e:\\Dabbanation\\Dabba_Delight_Backend';
+        const searchFiles = (dir) => {
+          if (foundPath) return;
+          const items = fs.readdirSync(dir);
+          for (const item of items) {
+            const fullPath = path.join(dir, item);
+            try {
+              const stat = fs.statSync(fullPath);
+              if (stat.isDirectory()) {
+                if (!item.includes('node_modules') && !item.includes('.git') && !item.includes('uploads')) {
+                  searchFiles(fullPath);
+                }
+              } else if (item.toLowerCase() === 'logo.png') {
+                foundPath = fullPath;
+                console.log(`🎯 RECURSIVE MATCH: ${fullPath}`);
+                return;
+              }
+            } catch (e) {}
+          }
+        };
+        searchFiles(rootDir);
+      } catch (err) {
+        console.log('⚠️ Recursive search error:', err.message);
+      }
+    }
+
+    if (foundPath) {
+      const stats = fs.statSync(foundPath);
+      const logoBase64 = fs.readFileSync(foundPath).toString('base64');
+      dabbaLogoUrl = `data:image/png;base64,${logoBase64}`;
+      console.log(`✅ FINAL SELECTION: ${foundPath} (${stats.size} bytes)`);
+      console.log(`📄 Base64 Length: ${dabbaLogoUrl.length}`);
+    } else {
+      console.log('❌ FATAL: Logo not found anywhere!');
+    }
+    console.log('--- LOGO SEARCH END ---');
+  } catch (err) {
+    console.log('⚠️ Critical logo error:', err.message);
+  }
+
+  const dabbaLogo = dabbaLogoUrl ? `
+    <div style="display: flex; align-items: center;">
+      <img src="${dabbaLogoUrl}" alt="Dabba Nation" style="height: 70px; width: auto; object-fit: contain;">
+    </div>
+  ` : `
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <div style="background: linear-gradient(135deg, #E23744 0%, #B21F29 100%); width: 52px; height: 52px; border-radius: 14px; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 26px; box-shadow: 0 4px 10px rgba(226, 55, 68, 0.3);">DN</div>
+      <div style="font-size: 28px; font-weight: 800; color: white; letter-spacing: -0.5px;">DABBA <span style="color: #E23744;">NATION</span></div>
+    </div>
+  `;
+
+  console.log('🔍 Generating Invoice:', {
+    invoiceNumber,
+    seller: sellerName,
+    hasGST: sellerGST !== 'N/A',
+    hasFSSAI: sellerFSSAI !== 'N/A'
+  });
+  
+  const itemsHTML = (order.items || []).map((item, index) => {
+    const price = item.sellingPrice || item.price || 0;
+    const quantity = item.quantity || 0;
+    const total = price * quantity;
+    return `
     <tr class="${index % 2 === 0 ? 'even-row' : 'odd-row'}">
       <td class="item-name">${item.name}</td>
-      <td class="item-quantity">${item.quantity}</td>
-      <td class="item-price">₹${item.price}</td>
-      <td class="item-total">₹${(item.price * item.quantity).toFixed(2)}</td>
+      <td class="item-quantity">${quantity}</td>
+      <td class="item-price">₹${price}</td>
+      <td class="item-total">₹${total.toFixed(2)}</td>
     </tr>
-  `).join('');
+    `;
+  }).join('');
 
   return `
 <!DOCTYPE html>
@@ -54,438 +151,209 @@ const getInvoiceHTML = (order, invoiceNumber) => {
             padding: 0;
             box-sizing: border-box;
         }
-        
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            background: #f8f9fa;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f4f7f6;
+            color: #1a1a1a;
+            line-height: 1.5;
         }
-        
         .invoice-container {
             max-width: 800px;
             margin: 0 auto;
-            background: var(--background);
-            border: 1px solid var(--border);
-            border-radius: 16px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
-            overflow: hidden;
+            background: #fff;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.05);
+            min-height: 100vh;
         }
-        
         .header {
-            background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-light) 100%);
+            background: linear-gradient(to right, #1a1a1a, #2d2d2d);
             color: white;
-            padding: 40px;
+            padding: 30px 50px;
             display: flex;
             justify-content: space-between;
             align-items: center;
+            border-bottom: 4px solid #E23744;
         }
-        
-        .header::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: url('data:image/svg+xml;base64,PHN2ZyB4aWR0aD0iNjAiIGhlaWdodD0iNjAiIHZpZXdCb3g9IjAgMCAyMCAyMCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjYwIiBoZWlnaHQ9IjYwIiByeD0iMTAiIGZpbGw9IiMzNDQ5NUUiLz4KPHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHZpZXdCb3g9IjAgMCA0MCA0MCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEwIDVIMjBWMjBIMTBWNVoiIGZpbGw9IndoaXRlIi8+CjxwYXRoIGQ9Ik0xNSAxMGgyMHYxMEgxNVYxMHoiIGZpbGw9IndoaXRlIi8+CjxwYXRoIGQ9Ik0zMCAxMGgxMHYxMEgzMFYxMHoiIGZpbGw9IndoaXRlIi8+Cjwvc3ZnPgo8L3N2Zz4KPC9zdmc+') repeat;
-            opacity: 0.05;
-        }
-        
-        .logo-section {
-            display: flex;
-            align-items: center;
-        }
-        
-        .dabba-logo {
-            width: 80px;
-            height: 80px;
-            background: white;
-            border-radius: 16px;
-            padding: 12px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: bold;
-            font-size: 14px;
-            color: var(--primary-color);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-        }
-        
-        .brand-text {
-            font-size: 32px;
-        }
-        
-        .invoice-details {
-            text-align: right;
-        }
-        
-        .invoice-number {
-            font-size: 24px;
-            font-weight: bold;
-            margin-bottom: 8px;
-        }
-        
-        .invoice-meta {
-            font-size: 14px;
-            opacity: 0.9;
-            line-height: 1.4;
-        }
-        
-        .content {
-            padding: 40px;
-        }
-        
-        .section {
-            margin-bottom: 40px;
-        }
-        
-        .section-title {
-            font-size: 18px;
-            font-weight: 600;
-            color: var(--primary-color);
-            margin-bottom: 20px;
-            padding-bottom: 10px;
-            border-bottom: 2px solid var(--border);
-        }
-        
-        .info-grid {
+        .details-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 40px;
+            gap: 0;
+            border-bottom: 1px solid #f0f0f0;
         }
-        
-        .info-section {
-            background: var(--surface);
-            padding: 25px;
-            border-radius: 12px;
-            border: 1px solid var(--border);
+        .details-section {
+            padding: 40px 50px;
+            border-right: 1px solid #f0f0f0;
         }
-        
-        .seller-logo {
-            width: 60px;
-            height: 60px;
-            border-radius: 12px;
-            object-fit: cover;
-            margin-bottom: 15px;
-            border: 2px solid var(--border);
+        .details-section:last-child {
+            border-right: none;
         }
-        
-        .info-item {
-            margin-bottom: 12px;
-            font-size: 15px;
-        }
-        
-        .info-item strong {
-            color: var(--primary-color);
-            font-weight: 600;
-        }
-        
-        .badge {
-            display: inline-block;
-            padding: 6px 12px;
-            border-radius: 20px;
+        .section-title {
             font-size: 12px;
-            font-weight: 600;
+            font-weight: 700;
+            color: #E23744;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-top: 10px;
+            letter-spacing: 1px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
-        
-        .badge-home {
-            background: linear-gradient(135deg, var(--success-color), #2ECC71);
-            color: white;
+        .info-group {
+            margin-bottom: 10px;
+            font-size: 14px;
         }
-        
-        .badge-restaurant {
-            background: linear-gradient(135deg, var(--accent-color), #5DADE2);
-            color: white;
+        .info-group .label {
+            color: #888;
+            width: 70px;
+            display: inline-block;
         }
-        
+        .info-group .value {
+            font-weight: 500;
+            color: #1a1a1a;
+        }
+        .content {
+            padding: 40px 50px;
+        }
         .items-table {
             width: 100%;
             border-collapse: collapse;
-            margin-top: 20px;
-            background: white;
-            border-radius: 12px;
-            overflow: hidden;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            margin-bottom: 30px;
         }
-        
         .items-table th {
-            background: var(--primary-color);
-            color: white;
-            padding: 18px 20px;
             text-align: left;
-            font-weight: 600;
-            font-size: 14px;
+            font-size: 12px;
+            font-weight: 700;
+            color: #888;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            padding: 15px 0;
+            border-bottom: 2px solid #1a1a1a;
         }
-        
         .items-table td {
-            padding: 20px;
-            border-bottom: 1px solid var(--border);
+            padding: 20px 0;
+            border-bottom: 1px solid #f0f0f0;
             font-size: 15px;
         }
-        
-        .even-row {
-            background: var(--surface);
+        .summary-section {
+            margin-top: 30px;
+            display: flex;
+            justify-content: flex-end;
         }
-        
-        .odd-row {
-            background: white;
+        .summary-box {
+            width: 300px;
         }
-        
-        .item-name {
-            font-weight: 600;
-            color: var(--text-primary);
-        }
-        
-        .item-quantity {
-            color: var(--text-secondary);
-        }
-        
-        .item-price {
-            color: var(--text-secondary);
-        }
-        
-        .item-total {
-            font-weight: 600;
-            color: var(--primary-color);
-        }
-        
-        .summary {
-            background: var(--surface);
-            padding: 30px;
-            border-radius: 12px;
-            border: 1px solid var(--border);
-        }
-        
-        .summary-row {
+        .summary-item {
             display: flex;
             justify-content: space-between;
-            margin-bottom: 12px;
-            font-size: 15px;
-        }
-        
-        .summary-row.total {
-            font-size: 18px;
-            font-weight: bold;
-            color: var(--primary-color);
-            padding-top: 15px;
-            border-top: 1px solid var(--border);
-        }
-        
-        .watermark {
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%) rotate(-45deg);
-            font-size: 120px;
-            font-weight: bold;
-            color: var(--primary-color);
-            opacity: 0.03;
-            z-index: -1;
-            pointer-events: none;
-            white-space: nowrap;
-        }
-        
-        .footer {
-            background: var(--surface);
-            padding: 30px 40px;
-            text-align: center;
-            border-top: 1px solid var(--border);
-        }
-        
-        .footer-text {
-            color: var(--text-secondary);
+            padding: 10px 0;
             font-size: 14px;
-            margin-bottom: 10px;
+            color: #666;
         }
-        
-        .footer-brand {
-            color: var(--primary-color);
-            font-weight: bold;
-            font-size: 16px;
+        .summary-total {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 2px solid #1a1a1a;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 22px;
+            font-weight: 800;
+            color: #1a1a1a;
         }
-        
-        @media print {
-            body { margin: 0; padding: 0; }
-            .invoice-container { box-shadow: none; border: 1px solid #ddd; }
-            .watermark { 
-                position: absolute; 
-                opacity: 0.05;
-            }
+        .footer {
+            padding: 50px;
+            background: #fdfdfd;
+            border-top: 1px solid #f0f0f0;
+            text-align: center;
+            color: #888;
+            font-size: 13px;
         }
         .status-badge {
-            display: inline-block;
-            padding: 12px 20px;
-            border-radius: 25px;
-            font-size: 14px;
-            font-weight: bold;
+            background: #E23744;
+            color: white;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-top: 15px;
-        }
-        
-        .status-paid {
-            background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
-            color: white;
-            box-shadow: 0 4px 12px rgba(40, 167, 69, 0.3);
-        }
-        
-        .status-pending {
-            background: linear-gradient(135deg, #ffc107 0%, #ff9800 100%);
-            color: white;
-            box-shadow: 0 4px 12px rgba(255, 152, 0, 0.3);
-        }
-        
-        .footer {
-            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
-            padding: 35px;
-            text-align: center;
-            border-top: 1px solid #e9ecef;
-        }
-        
-        .footer-text {
-            color: #495057;
-            font-size: 16px;
-            margin-bottom: 12px;
-            font-weight: 500;
-        }
-        
-        .contact-info {
-            color: #E23744;
-            font-size: 15px;
-            font-weight: 600;
-        }
-        
-        @media print {
-            body { background: white; }
-            .invoice-container { box-shadow: none; margin: 0; }
-            .watermark { display: none; }
         }
     </style>
 </head>
 <body>
     <div class="invoice-container">
-        <!-- Dabba Nation Watermark -->
-        <div class="watermark">DABBA NATION</div>
-        
-        <!-- Professional Header with Dabba Nation Logo -->
         <div class="header">
-            <div class="logo-section">
-                <div class="dabba-logo">
-                    <img src="http://localhost:5000/assets/logo.png" alt="Dabba Nation Logo" style="width: 100%; height: 100%; object-fit: contain;">
-                </div>
-                <div class="brand-text">DABBA NATION</div>
+            ${dabbaLogo}
+            <div style="text-align: right;">
+                <div style="font-size: 12px; font-weight: 700; opacity: 0.6; margin-bottom: 5px;">TAX INVOICE</div>
+                <div style="font-size: 18px; font-weight: 700; color: #E23744;">#${invoiceNumber}</div>
+                <div style="font-size: 13px; opacity: 0.8; margin-top: 5px;">${orderDate}</div>
             </div>
-            <div class="invoice-details">
-                <div class="invoice-number">Invoice #${invoiceNumber}</div>
-                <div class="invoice-meta">
-                    Date: ${orderDate}<br>
-                    Order: #${order.orderNumber || 'N/A'}<br>
-                    Payment: ${(order.paymentMethod || '').toUpperCase()}
+        </div>
+
+        <div class="details-grid">
+            <div class="details-section">
+                <div class="section-title">Recipient</div>
+                <div style="font-size: 16px; font-weight: 700; margin-bottom: 10px;">${customerName}</div>
+                <div class="info-group"><span class="label">Phone</span><span class="value">${customerPhone}</span></div>
+                <div class="info-group"><span class="label">Address</span><span class="value">${customerAddress}</span></div>
+            </div>
+            <div class="details-section">
+                <div class="section-title">Provider</div>
+                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 15px;">
+                    <img src="${sellerLogo}" onerror="this.src='https://cdn-icons-png.flaticon.com/512/1046/1046771.png'" style="width: 40px; height: 40px; border-radius: 6px; object-fit: cover;">
+                    <div>
+                        <div style="font-size: 16px; font-weight: 700;">${sellerName}</div>
+                        <div style="font-size: 11px; color: #888; text-transform: uppercase;">${sellerType}</div>
+                    </div>
                 </div>
+                ${sellerGST ? `<div class="info-group"><span class="label">GST</span><span class="value">${sellerGST}</span></div>` : ''}
+                ${sellerFSSAI ? `<div class="info-group"><span class="label">FSSAI</span><span class="value">${sellerFSSAI}</span></div>` : ''}
+                <div class="info-group"><span class="label">Address</span><span class="value">${sellerAddress}</span></div>
             </div>
         </div>
 
         <div class="content">
-            <!-- Two Column Layout -->
-            <div class="two-column">
-                <!-- Customer Details -->
-                <div class="info-section">
-                    <div class="section-title">
-                        📍 Delivery Details
-                    </div>
-                    <div class="info-item"><strong>Name:</strong> ${customerName}</div>
-                    <div class="info-item"><strong>Phone:</strong> ${customerPhone}</div>
-                    <div class="info-item"><strong>Address:</strong> ${customerAddress}</div>
-                </div>
-
-                <!-- Restaurant Details with Logo and Type -->
-                <div class="info-section">
-                    <div class="section-title">
-                        🏪 ${sellerType} Details
-                    </div>
-                    <img src="${sellerLogo}" alt="${sellerName}" class="seller-logo">
-                    <div class="info-item"><strong>Name:</strong> ${sellerName}</div>
-                    <div class="info-item"><strong>Phone:</strong> ${order.sellerId?.phone || 'N/A'}</div>
-                    <div class="info-item"><strong>Email:</strong> ${order.sellerId?.email || 'N/A'}</div>
-                    <div class="seller-type ${order.sellerId?.type === 'home_chef' ? 'type-homechef' : 'type-restaurant'}">
-                        ${order.sellerId?.type === 'home_chef' ? '👨‍🍳 Home Chef' : '🍽 Restaurant'}
-                    </div>
-                </div>
-            </div>
-
-            <!-- Order Items Table -->
             <table class="items-table">
                 <thead>
                     <tr>
-                        <th style="width: 40%;">ITEM</th>
-                        <th style="width: 15%;">QTY</th>
-                        <th style="width: 20%;">PRICE</th>
-                        <th style="width: 25%;">TOTAL</th>
+                        <th>Description</th>
+                        <th style="text-align: center;">Qty</th>
+                        <th style="text-align: right;">Price</th>
+                        <th style="text-align: right;">Amount</th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${itemsHTML}
+                    ${(order.items || []).map(item => `
+                        <tr>
+                            <td style="font-weight: 600;">${item.name}</td>
+                            <td style="text-align: center;">${item.quantity}</td>
+                            <td style="text-align: right;">₹${(Number(item.sellingPrice || item.price) || 0).toFixed(2)}</td>
+                            <td style="text-align: right; font-weight: 700;">₹${((Number(item.sellingPrice || item.price) || 0) * (Number(item.quantity) || 0)).toFixed(2)}</td>
+                        </tr>
+                    `).join('')}
                 </tbody>
             </table>
 
-            <!-- Summary Section -->
             <div class="summary-section">
-                <div class="summary-grid">
-                    <div>
-                        <div class="summary-item">
-                            <span>Subtotal:</span>
-                            <span>₹${order.subtotal || 0}</span>
-                        </div>
-                        ${(order.discount || 0) > 0 ? `
-                        <div class="summary-item discount">
-                            <span>Discount:</span>
-                            <span>-₹${order.discount}</span>
-                        </div>
-                        ` : ''}
-                        <div class="summary-item">
-                            <span>Delivery Fee:</span>
-                            <span>₹${order.deliveryFee || 0}</span>
-                        </div>
-                        <div class="summary-item">
-                            <span>GST:</span>
-                            <span>₹${order.gstAmount || 0}</span>
-                        </div>
-                        <div class="summary-item">
-                            <span>Platform Fee:</span>
-                            <span>₹${order.platformFee || 0}</span>
-                        </div>
-                    </div>
+                <div class="summary-box">
+                    <div class="summary-item"><span>Subtotal</span><span>₹${(order.subtotal || 0).toFixed(2)}</span></div>
+                    <div class="summary-item"><span>Delivery</span><span>₹${(order.deliveryFee || 0).toFixed(2)}</span></div>
+                    <div class="summary-item"><span>Tax (GST)</span><span>₹${((order.foodCgst || 0) + (order.foodSgst || 0) + (order.foodIgst || 0) + (order.deliveryCgst || 0) + (order.deliverySgst || 0) + (order.deliveryIgst || 0)).toFixed(2)}</span></div>
                     <div class="summary-total">
-                        TOTAL AMOUNT<br>
-                        ₹${order.total || 0}
+                        <span>Total</span>
+                        <span>₹${(order.total || 0).toFixed(2)}</span>
                     </div>
-                </div>
-                
-                <div style="margin-top: 20px;">
-                    <span class="status-badge ${order.paymentStatus === 'paid' ? 'status-paid' : 'status-pending'}">
-                        ${order.paymentStatus === 'paid' ? '✓ PAYMENT COMPLETED' : '⏳ PAYMENT PENDING'}
-                    </span>
+                    <div style="margin-top: 20px; text-align: right;">
+                        <span class="status-badge">${(order.paymentStatus || 'pending').toUpperCase()}</span>
+                    </div>
                 </div>
             </div>
         </div>
 
-        <!-- Professional Footer -->
         <div class="footer">
-            <div class="footer-text">
-                Thank you for ordering with <strong>DABBA NATION</strong>!<br>
-                Your favorite food, delivered with love ❤️<br>
-                <em>India's Premier Food Delivery Platform</em>
-            </div>
-            <div class="contact-info">
-                📞 support@dabbanation.com | +91 1800-123-4567<br>
-                🌐 www.dabbanation.com
-            </div>
+            <div style="margin-bottom: 15px; font-weight: 600; color: #1a1a1a;">DABBA NATION</div>
+            <div>India's Premier Food Delivery Platform</div>
+            <div style="margin-top: 10px;">support@dabbanation.com | www.dabbanation.com</div>
         </div>
     </div>
 </body>
@@ -503,24 +371,21 @@ exports.generateInvoice = async (order) => {
   });
 
   const existing = await Invoice.findOne({ orderId: order._id });
+  let invoiceNumber = existing ? existing.invoiceNumber : await generateInvoiceNumber();
+
   if (existing) {
-    console.log('✅ Invoice already exists:', existing.invoiceNumber);
-    console.log('🔄 Regenerating invoice with new HTML template...');
+    console.log('✅ Reusing existing invoice number:', invoiceNumber);
     // Delete old invoice file if exists
     if (existing.pdfPath && fs.existsSync(existing.pdfPath)) {
-      fs.unlinkSync(existing.pdfPath);
-      console.log('🗑️ Deleted old invoice file:', existing.pdfPath);
+      try {
+        fs.unlinkSync(existing.pdfPath);
+      } catch (err) { /* ignore */ }
     }
-    // Delete old invoice record
-    await Invoice.deleteOne({ orderId: order._id });
-    console.log('🗑️ Deleted old invoice record');
   }
-
-  const invoiceNumber = await generateInvoiceNumber();
   
   // Validate and fix items to prevent NaN
   const validatedItems = (order.items || []).map(item => {
-    const price = Number(item.price) || 0;
+    const price = Number(item.sellingPrice || item.price) || 0;
     const quantity = Number(item.quantity) || 0;
     return {
       name: item.name || 'Item',
@@ -528,7 +393,7 @@ exports.generateInvoice = async (order) => {
       price: price,
       total: price * quantity
     };
-  }).filter(item => item.quantity > 0); // Remove items with 0 quantity
+  }).filter(item => item.quantity > 0);
   
   const invoice = new Invoice({
     invoiceNumber, 
@@ -575,6 +440,10 @@ exports.generateInvoice = async (order) => {
     
     // Set content and generate PDF
     await page.setContent(html, { waitUntil: 'networkidle0' });
+    
+    // Give it a moment to render the Base64 images and styles
+    await new Promise(r => setTimeout(r, 2000));
+    
     await page.pdf({
       path: tempPdfPath,
       format: 'A4',
@@ -589,24 +458,30 @@ exports.generateInvoice = async (order) => {
     
     await browser.close();
     
-    // Upload to S3
-    console.log('☁️ Uploading invoice to S3...');
-    const pdfBuffer = fs.readFileSync(tempPdfPath);
-    const s3File = {
-      originalname: `${invoiceNumber}.pdf`,
-      buffer: pdfBuffer,
-      mimetype: 'application/pdf'
-    };
-    
-    const s3Url = await uploadToS3(s3File, 'invoices');
-    
-    // Delete temporary file
-    fs.unlinkSync(tempPdfPath);
-    console.log('🗑️ Deleted temporary file:', tempPdfPath);
-    
-    invoice.pdfPath = s3Url;
-    console.log(`✅ HTML Invoice uploaded to S3: ${s3Url}`);
-    console.log(`📄 File size: ${pdfBuffer.length} bytes`);
+    let s3Url;
+    try {
+      console.log('☁️ Uploading invoice to S3...');
+      const pdfBuffer = fs.readFileSync(tempPdfPath);
+      const s3File = {
+        originalname: `${invoiceNumber}.pdf`,
+        buffer: pdfBuffer,
+        mimetype: 'application/pdf'
+      };
+      s3Url = await uploadToS3(s3File, 'invoices');
+      
+      // Delete temporary file only if S3 successful
+      fs.unlinkSync(tempPdfPath);
+      console.log('🗑️ Deleted temporary file after S3 upload:', tempPdfPath);
+      
+      invoice.pdfPath = s3Url;
+      console.log(`✅ HTML Invoice uploaded to S3: ${s3Url}`);
+      console.log(`📄 File size: ${pdfBuffer.length} bytes`);
+    } catch (s3Err) {
+      console.error('⚠️ S3 upload failed, keeping local file:', s3Err.message);
+      const localRelativePath = `/uploads/invoices/${invoiceNumber}.pdf`;
+      invoice.pdfPath = localRelativePath;
+      console.log(`📂 Invoice saved locally: ${localRelativePath}`);
+    }
   } catch (pdfErr) {
     console.log('❌ PDF generation failed:', pdfErr.message);
     console.log('🔄 Using fallback PDF method...');
@@ -618,74 +493,172 @@ exports.generateInvoice = async (order) => {
       if (!fs.existsSync(pdfDir)) fs.mkdirSync(pdfDir, { recursive: true });
       const tempPdfPath = path.join(pdfDir, `${invoiceNumber}.pdf`);
       
+      const sellerName = order.sellerId?.businessName || 'Restaurant';
+      const sellerType = order.sellerId?.type === 'home_chef' ? 'Home Chef' : 'Restaurant';
+      const sellerGST = order.sellerId?.gstNumber || 'N/A';
+      const sellerFSSAI = order.sellerId?.fssaiLicense || 'N/A';
+      const sellerAddress = order.sellerId?.address?.fullAddress || 
+        `${order.sellerId?.address?.street || ''}, ${order.sellerId?.address?.city || ''}`.trim() || 'N/A';
+        
+      const customerName = order.userId?.name || 'Customer';
+      const customerPhone = order.userId?.phone || 'N/A';
+      const customerAddress = order.deliveryAddress?.fullAddress || 
+        `${order.deliveryAddress?.street || ''}, ${order.deliveryAddress?.city || ''}`.trim() || 'N/A';
+        
+      const orderDate = new Date(order.createdAt).toLocaleDateString('en-IN', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+      });
+
       const doc = new PDFDocument({ size: 'A4', margin: 40 });
       const stream = fs.createWriteStream(tempPdfPath);
       doc.pipe(stream);
       
       // Professional fallback PDF generation
       doc.fillColor('#E23744').rect(0, 0, doc.page.width, 120).fill();
-      doc.fillColor('white').fontSize(32).font('Helvetica-Bold').text('DABBA NATION', 50, 50);
-      doc.fillColor('white').fontSize(14).font('Helvetica').text(`Invoice #${invoiceNumber}`, 50, 85);
-      doc.fillColor('white').fontSize(12).font('Helvetica').text(`Date: ${new Date(order.createdAt).toLocaleDateString('en-IN')}`, 50, 105);
+      
+      // Try to add Dabba Nation logo to fallback
+      try {
+        const logoPath = path.join(__dirname, '../public/assets/logo.png');
+        if (fs.existsSync(logoPath)) {
+          doc.image(logoPath, 50, 20, { width: 50 });
+        }
+      } catch (e) {
+        console.log('⚠️ Could not add logo to fallback PDF');
+      }
+
+      doc.fillColor('white').fontSize(32).font('Helvetica-Bold').text('DABBA NATION', 110, 45);
+      doc.fillColor('white').fontSize(14).font('Helvetica').text(`Invoice #${invoiceNumber}`, 110, 80);
+      doc.fillColor('white').fontSize(12).font('Helvetica').text(`Date: ${orderDate}`, 110, 100);
       
       // Customer details
-      doc.fillColor('#333').fontSize(14).font('Helvetica-Bold').text('Customer Details:', 50, 160);
-      doc.fillColor('#666').fontSize(12).font('Helvetica').text(`Name: ${order.userId?.name || 'Customer'}`, 50, 180);
-      doc.fillColor('#666').fontSize(12).font('Helvetica').text(`Phone: ${order.userId?.phone || 'N/A'}`, 50, 195);
-      doc.fillColor('#666').fontSize(12).font('Helvetica').text(`Address: ${order.deliveryAddress?.fullAddress || 'N/A'}`, 50, 210);
+      let y = 150;
+      doc.fillColor('#E23744').fontSize(14).font('Helvetica-Bold').text('Customer Details', 50, y);
+      doc.fillColor('#333').fontSize(10).font('Helvetica-Bold').text('Name:', 50, y + 20);
+      doc.fillColor('#666').font('Helvetica').text(customerName, 100, y + 20);
+      doc.fillColor('#333').font('Helvetica-Bold').text('Phone:', 50, y + 35);
+      doc.fillColor('#666').font('Helvetica').text(customerPhone, 100, y + 35);
+      doc.fillColor('#333').font('Helvetica-Bold').text('Address:', 50, y + 50);
+      doc.fillColor('#666').font('Helvetica').text(customerAddress, 100, y + 50, { width: 180 });
       
       // Seller details
-      doc.fillColor('#333').fontSize(14).font('Helvetica-Bold').text('Restaurant Details:', 300, 160);
-      doc.fillColor('#666').fontSize(12).font('Helvetica').text(`Name: ${order.sellerId?.businessName || 'Restaurant'}`, 300, 180);
-      doc.fillColor('#666').fontSize(12).font('Helvetica').text(`Type: ${order.sellerId?.type === 'home_chef' ? 'Home Chef' : 'Restaurant'}`, 300, 195);
+      doc.fillColor('#E23744').fontSize(14).font('Helvetica-Bold').text(`${sellerType} Details`, 300, y);
+      doc.fillColor('#333').fontSize(10).font('Helvetica-Bold').text('Name:', 300, y + 20);
+      doc.fillColor('#666').font('Helvetica').text(sellerName, 350, y + 20);
+      doc.fillColor('#333').font('Helvetica-Bold').text('GST:', 300, y + 35);
+      doc.fillColor('#666').font('Helvetica').text(sellerGST, 350, y + 35);
+      doc.fillColor('#333').font('Helvetica-Bold').text('FSSAI:', 300, y + 50);
+      doc.fillColor('#666').font('Helvetica').text(sellerFSSAI, 350, y + 50);
+      doc.fillColor('#333').font('Helvetica-Bold').text('Address:', 300, y + 65);
+      doc.fillColor('#666').font('Helvetica').text(sellerAddress, 350, y + 65, { width: 180 });
       
-      // Items table
-      doc.fillColor('#333').fontSize(14).font('Helvetica-Bold').text('Order Items:', 50, 250);
-      let yPosition = 270;
+      // Items table header
+      y = 260;
+      doc.fillColor('#f4f4f4').rect(50, y, 500, 25).fill();
+      doc.fillColor('#333').fontSize(10).font('Helvetica-Bold');
+      doc.text('ITEM', 60, y + 8);
+      doc.text('QTY', 300, y + 8);
+      doc.text('PRICE', 380, y + 8);
+      doc.text('TOTAL', 480, y + 8);
       
+      y += 30;
       (order.items || []).forEach((item, index) => {
-        doc.fillColor('#666').fontSize(11).font('Helvetica').text(`${item.quantity}x ${item.name}`, 50, yPosition);
-        doc.fillColor('#E23744').fontSize(11).font('Helvetica-Bold').text(`₹${(item.price * item.quantity).toFixed(2)}`, 450, yPosition, { align: 'right' });
-        yPosition += 20;
+        const price = Number(item.sellingPrice || item.price) || 0;
+        const qty = Number(item.quantity) || 0;
+        doc.fillColor('#333').font('Helvetica').fontSize(9);
+        doc.text(item.name, 60, y);
+        doc.text(qty.toString(), 300, y);
+        doc.text(`₹${price}`, 380, y);
+        doc.text(`₹${(price * qty).toFixed(2)}`, 480, y);
+        y += 20;
       });
       
-      // Total
-      yPosition += 20;
-      doc.fillColor('#333').fontSize(14).font('Helvetica-Bold').text(`Total Amount: ₹${order.total || 0}`, 450, yPosition, { align: 'right' });
+      // Summary
+      y += 20;
+      doc.rect(350, y, 200, 150).stroke('#eee');
+      const summaryY = y + 10;
+      const drawSummaryRow = (label, value, isTotal = false) => {
+        doc.fillColor(isTotal ? '#E23744' : '#333').font(isTotal ? 'Helvetica-Bold' : 'Helvetica').fontSize(isTotal ? 12 : 9);
+        doc.text(label, 360, y + 10);
+        doc.text(`₹${value}`, 540, y + 10, { align: 'right', width: -10 });
+        y += isTotal ? 25 : 18;
+      };
+      
+      drawSummaryRow('Subtotal:', order.subtotal || 0);
+      drawSummaryRow('Discount:', -(order.discount || 0));
+      drawSummaryRow('Delivery Fee:', order.deliveryFee || 0);
+      drawSummaryRow('GST (Food):', (order.foodCgst || 0) + (order.foodSgst || 0) + (order.foodIgst || 0));
+      drawSummaryRow('GST (Delivery):', (order.deliveryCgst || 0) + (order.deliverySgst || 0) + (order.deliveryIgst || 0));
+      drawSummaryRow('Platform Fee:', order.platformFee || 0);
+      y += 5;
+      doc.moveTo(360, y).lineTo(540, y).stroke('#eee');
+      y += 10;
+      drawSummaryRow('TOTAL:', order.total || 0, true);
       
       // Footer
-      doc.fillColor('#E23744').fontSize(10).font('Helvetica').text('Thank you for ordering with DABBA NATION!', 50, doc.page.height - 50, { align: 'center' });
+      doc.fillColor('#E23744').fontSize(10).font('Helvetica-Bold').text('Thank you for ordering with DABBA NATION!', 50, doc.page.height - 70, { align: 'center' });
+      doc.fillColor('#666').fontSize(8).font('Helvetica').text('India\'s Premier Food Delivery Platform | support@dabbanation.com', 50, doc.page.height - 55, { align: 'center' });
       
       doc.end();
       
-      // Wait for PDF to finish
-      await new Promise(resolve => stream.on('finish', resolve));
+      // Wait for PDF to finish with error handling
+      await new Promise((resolve, reject) => {
+        stream.on('finish', resolve);
+        stream.on('error', reject);
+      });
       
-      // Upload fallback PDF to S3
-      console.log('☁️ Uploading fallback invoice to S3...');
-      const pdfBuffer = fs.readFileSync(tempPdfPath);
-      const s3File = {
-        originalname: `${invoiceNumber}.pdf`,
-        buffer: pdfBuffer,
-        mimetype: 'application/pdf'
-      };
-      
-      const s3Url = await uploadToS3(s3File, 'invoices');
-      
-      // Delete temporary file
-      fs.unlinkSync(tempPdfPath);
-      console.log('🗑️ Deleted temporary file:', tempPdfPath);
-      
-      invoice.pdfPath = s3Url;
-      console.log(`✅ Fallback Invoice uploaded to S3: ${s3Url}`);
-      console.log(`📄 File size: ${pdfBuffer.length} bytes`);
+      let s3Url;
+      try {
+        console.log('☁️ Uploading fallback invoice to S3...');
+        const pdfBuffer = fs.readFileSync(tempPdfPath);
+        const s3File = {
+          originalname: `${invoiceNumber}.pdf`,
+          buffer: pdfBuffer,
+          mimetype: 'application/pdf'
+        };
+        s3Url = await uploadToS3(s3File, 'invoices');
+        
+        // Delete temporary file only if S3 successful
+        fs.unlinkSync(tempPdfPath);
+        console.log('🗑️ Deleted temporary file after S3 upload:', tempPdfPath);
+        
+        invoice.pdfPath = s3Url;
+        console.log(`✅ Fallback Invoice uploaded to S3: ${s3Url}`);
+        console.log(`📄 File size: ${pdfBuffer.length} bytes`);
+      } catch (s3Err) {
+        console.error('⚠️ Fallback S3 upload failed, keeping local file:', s3Err.message);
+        const localRelativePath = `/uploads/invoices/${invoiceNumber}.pdf`;
+        invoice.pdfPath = localRelativePath;
+        console.log(`📂 Fallback Invoice saved locally: ${localRelativePath}`);
+      }
     } catch (fallbackErr) {
       console.log('❌ Fallback PDF also failed:', fallbackErr.message);
       throw new Error('Invoice generation failed completely');
     }
   }
 
-  await invoice.save();
-  console.log(`✅ Invoice saved to database: ${invoice.invoiceNumber}`);
-  return invoice;
+  // ATOMIC UPDATE/INSERT to prevent duplicate key errors
+  const finalInvoice = await Invoice.findOneAndUpdate(
+    { orderId: order._id },
+    {
+      $set: {
+        invoiceNumber,
+        userId: order.userId,
+        sellerId: order.sellerId,
+        items: validatedItems,
+        subtotal: Number(order.subtotal) || 0,
+        tax: Number(order.gstAmount) || 0,
+        deliveryFee: Number(order.deliveryFee) || 0,
+        platformFee: Number(order.platformFee) || 0,
+        totalAmount: Number(order.total) || 0,
+        paymentStatus: order.paymentStatus || 'pending',
+        pdfPath: invoice.pdfPath // Use the path set during generation
+      }
+    },
+    { upsert: true, new: true }
+  );
+
+  console.log(`✅ Invoice saved to database: ${finalInvoice.invoiceNumber}`);
+  return finalInvoice;
 };

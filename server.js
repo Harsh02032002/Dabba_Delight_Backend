@@ -317,6 +317,7 @@ app.use((req, res, next) => {
 
 // Static files for uploads
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/assets', express.static(path.join(__dirname, 'public/assets')));
 
 // ─── Connect Database ───────────────────────────────
 connectDB();
@@ -359,5 +360,6 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   console.log(`🚀 Dabba Nation server running on port ${PORT}`);
+  console.log('✅ Invoice System v2.0 (Forced Regeneration) active');
   console.log(`📡 Environment: ${process.env.NODE_ENV || 'development'}`);
 });

@@ -313,7 +313,7 @@ exports.getUserOrders = async (req, res) => {
     console.log('- Final filter:', filter);
     
     const orders = await Order.find(filter)
-      .populate('sellerId', 'businessName type logo')
+      .populate('sellerId', 'businessName type logo address')
       .sort({ createdAt: -1 });
       
     console.log('- Found orders count:', orders.length);
@@ -335,7 +335,7 @@ exports.getUserOrders = async (req, res) => {
 exports.getOrderById = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
-      .populate('sellerId', 'businessName type logo phone')
+      .populate('sellerId', 'businessName type logo phone address')
       .populate('items.menuItemId', 'name image');
     if (!order) return res.status(404).json({ message: 'Order not found' });
     if (order.userId.toString() !== req.user._id.toString() && req.user.role !== 'admin')

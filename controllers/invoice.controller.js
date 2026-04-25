@@ -8,7 +8,7 @@ exports.generateInvoiceForOrder = async (req, res) => {
   try {
     const order = await Order.findById(req.params.orderId)
       .populate('userId', 'name email phone')
-      .populate('sellerId', 'businessName email phone');
+      .populate('sellerId', 'businessName email phone logo type gstNumber fssaiLicense address');
     if (!order) return res.status(404).json({ message: 'Order not found' });
     const invoice = await generateInvoice(order);
     res.json({ success: true, invoice });
@@ -54,30 +54,24 @@ exports.downloadInvoice = async (req, res) => {
       return res.status(403).json({ message: 'Unauthorized to download this invoice' });
     }
     
-    const invoice = await Invoice.findOne({ orderId: req.params.orderId });
-    console.log('📄 Found invoice:', invoice ? invoice.invoiceNumber : 'NOT FOUND');
+    // Force regeneration to ensure latest template and data
+    console.log(`[${new Date().toISOString()}] 🔄 REGENERATING INVOICE for order: ${req.params.orderId}`);
     
-    if (!invoice || !invoice.pdfPath) {
-      console.log('❌ Invoice not found or no PDF path');
-      console.log('🔍 Available invoices for this user:');
-      
-      // Show all invoices for this user for debugging
-      try {
-        const userOrders = await Order.find({ userId: req.user._id }).select('_id');
-        const userInvoices = await Invoice.find({ 
-          orderId: { $in: userOrders }
-        });
-        console.log('📋 User invoices:', userInvoices.map(inv => ({ 
-          invoiceNumber: inv.invoiceNumber, 
-          orderId: inv.orderId, 
-          hasPdfPath: !!inv.pdfPath 
-        })));
-      } catch (debugErr) {
-        console.log('❌ Debug query failed:', debugErr.message);
-      }
-      
-      return res.status(404).json({ message: 'Invoice not found' });
+    // Set headers to prevent caching of the download/redirect
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
+    const orderWithDetails = await Order.findById(req.params.orderId)
+      .populate('userId', 'name email phone')
+      .populate('sellerId', 'businessName email phone logo type gstNumber fssaiLicense address');
+    
+    if (!orderWithDetails) {
+      console.log('❌ Order not found for regeneration');
+      return res.status(404).json({ message: 'Order not found' });
     }
+
+    const invoice = await generateInvoice(orderWithDetails);
     
     console.log('📁 PDF path:', invoice.pdfPath);
     
@@ -89,17 +83,20 @@ exports.downloadInvoice = async (req, res) => {
     } else {
       // It's a local file (fallback)
       console.log('📁 Local file path:', invoice.pdfPath);
-      console.log('📁 File exists:', fs.existsSync(invoice.pdfPath));
       
-      if (!fs.existsSync(invoice.pdfPath)) {
-        console.log('❌ Local PDF file not found at path:', invoice.pdfPath);
+      const absolutePath = invoice.pdfPath.startsWith('/') 
+        ? path.join(__dirname, '..', invoice.pdfPath)
+        : invoice.pdfPath;
+
+      if (!fs.existsSync(absolutePath)) {
+        console.log('❌ Local PDF file not found at path:', absolutePath);
         return res.status(404).json({ message: 'PDF not found' });
       }
       
       console.log('📤 Streaming local PDF file...');
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `attachment; filename=${invoice.invoiceNumber}.pdf`);
-      fs.createReadStream(invoice.pdfPath).pipe(res);
+      fs.createReadStream(absolutePath).pipe(res);
     }
   } catch (err) {
     console.log('❌ Download error:', err.message);
