@@ -518,7 +518,7 @@ exports.generateInvoice = async (order) => {
       doc.pipe(stream);
       
       // Professional fallback PDF generation
-      doc.fillColor('#E23744').rect(0, 0, doc.page.width, 120).fill();
+      doc.fillColor('#1a1a1a').rect(0, 0, doc.page.width, 120).fill();
       
       // Try to add Dabba Nation logo to fallback
       try {
