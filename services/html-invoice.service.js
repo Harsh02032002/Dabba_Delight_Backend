@@ -22,8 +22,8 @@ const getInvoiceHTML = (order, invoiceNumber) => {
   
   const sellerName = order.sellerId?.businessName || 'Restaurant';
   const sellerType = order.sellerId?.type === 'home_chef' ? 'Home Chef' : 'Restaurant';
-  const sellerGST = (order.sellerId?.gstNumber && order.sellerId?.gstNumber !== 'N/A' && order.sellerId?.gstNumber.trim() !== '') ? order.sellerId.gstNumber : null;
-  const sellerFSSAI = (order.sellerId?.fssaiLicense && order.sellerId?.fssaiLicense !== 'N/A' && order.sellerId?.fssaiLicense.trim() !== '') ? order.sellerId.fssaiLicense : null;
+  const sellerGST = (order.sellerId?.gstNumber && order.sellerId?.gstNumber !== 'N/A' && order.sellerId?.gstNumber.trim() !== '') ? order.sellerId.gstNumber : '0';
+  const sellerFSSAI = (order.sellerId?.fssaiLicense && order.sellerId?.fssaiLicense !== 'N/A' && order.sellerId?.fssaiLicense.trim() !== '') ? order.sellerId.fssaiLicense : '0';
   const sellerAddress = order.sellerId?.address?.fullAddress || 
     `${order.sellerId?.address?.street || ''}, ${order.sellerId?.address?.city || ''}`.trim() || 'N/A';
     
@@ -306,8 +306,8 @@ const getInvoiceHTML = (order, invoiceNumber) => {
                         <div style="font-size: 11px; color: #888; text-transform: uppercase;">${sellerType}</div>
                     </div>
                 </div>
-                ${sellerGST ? `<div class="info-group"><span class="label">GST</span><span class="value">${sellerGST}</span></div>` : ''}
-                ${sellerFSSAI ? `<div class="info-group"><span class="label">FSSAI</span><span class="value">${sellerFSSAI}</span></div>` : ''}
+                <div class="info-group"><span class="label">GST</span><span class="value">${sellerGST}</span></div>
+                <div class="info-group"><span class="label">FSSAI</span><span class="value">${sellerFSSAI}</span></div>
                 <div class="info-group"><span class="label">Address</span><span class="value">${sellerAddress}</span></div>
             </div>
         </div>
@@ -336,9 +336,11 @@ const getInvoiceHTML = (order, invoiceNumber) => {
 
             <div class="summary-section">
                 <div class="summary-box">
-                    <div class="summary-item"><span>Subtotal</span><span>₹${(order.subtotal || 0).toFixed(2)}</span></div>
-                    <div class="summary-item"><span>Delivery</span><span>₹${(order.deliveryFee || 0).toFixed(2)}</span></div>
-                    <div class="summary-item"><span>Tax (GST)</span><span>₹${((order.foodCgst || 0) + (order.foodSgst || 0) + (order.foodIgst || 0) + (order.deliveryCgst || 0) + (order.deliverySgst || 0) + (order.deliveryIgst || 0)).toFixed(2)}</span></div>
+                    <div class="summary-item"><span>Subtotal</span><span>₹${(Number(order.subtotal) || 0).toFixed(2)}</span></div>
+                    <div class="summary-item"><span>Discount</span><span>-₹${(Number(order.discount) || 0).toFixed(2)}</span></div>
+                    <div class="summary-item"><span>Delivery</span><span>₹${(Number(order.deliveryFee) || 0).toFixed(2)}</span></div>
+                    <div class="summary-item"><span>Tax (GST)</span><span>₹${((Number(order.foodCgst) || 0) + (Number(order.foodSgst) || 0) + (Number(order.foodIgst) || 0) + (Number(order.deliveryCgst) || 0) + (Number(order.deliverySgst) || 0) + (Number(order.deliveryIgst) || 0)).toFixed(2)}</span></div>
+                    <div class="summary-item"><span>Platform Fee</span><span>₹${(Number(order.platformFee) || 0).toFixed(2)}</span></div>
                     <div class="summary-total">
                         <span>Total</span>
                         <span>₹${(order.total || 0).toFixed(2)}</span>
@@ -495,8 +497,8 @@ exports.generateInvoice = async (order) => {
       
       const sellerName = order.sellerId?.businessName || 'Restaurant';
       const sellerType = order.sellerId?.type === 'home_chef' ? 'Home Chef' : 'Restaurant';
-      const sellerGST = order.sellerId?.gstNumber || 'N/A';
-      const sellerFSSAI = order.sellerId?.fssaiLicense || 'N/A';
+      const sellerGST = order.sellerId?.gstNumber || '0';
+      const sellerFSSAI = order.sellerId?.fssaiLicense || '0';
       const sellerAddress = order.sellerId?.address?.fullAddress || 
         `${order.sellerId?.address?.street || ''}, ${order.sellerId?.address?.city || ''}`.trim() || 'N/A';
         
@@ -581,16 +583,19 @@ exports.generateInvoice = async (order) => {
       const drawSummaryRow = (label, value, isTotal = false) => {
         doc.fillColor(isTotal ? '#E23744' : '#333').font(isTotal ? 'Helvetica-Bold' : 'Helvetica').fontSize(isTotal ? 12 : 9);
         doc.text(label, 360, y + 10);
-        doc.text(`₹${value}`, 540, y + 10, { align: 'right', width: -10 });
+        
+        // Format value to 2 decimal places if it's a number
+        const formattedValue = typeof value === 'number' ? value.toFixed(2) : value;
+        doc.text(`₹${formattedValue}`, 460, y + 10, { align: 'right', width: 80 });
         y += isTotal ? 25 : 18;
       };
       
-      drawSummaryRow('Subtotal:', order.subtotal || 0);
-      drawSummaryRow('Discount:', -(order.discount || 0));
-      drawSummaryRow('Delivery Fee:', order.deliveryFee || 0);
-      drawSummaryRow('GST (Food):', (order.foodCgst || 0) + (order.foodSgst || 0) + (order.foodIgst || 0));
-      drawSummaryRow('GST (Delivery):', (order.deliveryCgst || 0) + (order.deliverySgst || 0) + (order.deliveryIgst || 0));
-      drawSummaryRow('Platform Fee:', order.platformFee || 0);
+      drawSummaryRow('Subtotal:', Number(order.subtotal) || 0);
+      drawSummaryRow('Discount:', -(Number(order.discount) || 0));
+      drawSummaryRow('Delivery Fee:', Number(order.deliveryFee) || 0);
+      drawSummaryRow('GST (Food):', (Number(order.foodCgst) || 0) + (Number(order.foodSgst) || 0) + (Number(order.foodIgst) || 0));
+      drawSummaryRow('GST (Delivery):', (Number(order.deliveryCgst) || 0) + (Number(order.deliverySgst) || 0) + (Number(order.deliveryIgst) || 0));
+      drawSummaryRow('Platform Fee:', Number(order.platformFee) || 0);
       y += 5;
       doc.moveTo(360, y).lineTo(540, y).stroke('#eee');
       y += 10;

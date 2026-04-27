@@ -358,7 +358,7 @@ app.use((err, req, res, next) => {
 
 // ─── Start Server ───────────────────────────────────
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Dabba Nation server running on port ${PORT}`);
   console.log('✅ Invoice System v2.0 (Forced Regeneration) active');
   console.log(`📡 Environment: ${process.env.NODE_ENV || 'development'}`);
