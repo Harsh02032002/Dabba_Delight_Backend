@@ -126,24 +126,56 @@ exports.purchase = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Seller selection required' });
     }
     
-    console.log('🚀 Calling createSubscriptionPurchase with:', purchaseData);
+    // HYBRID PAYMENT: Handle wallet deduction if used
+    const { usedWallet, walletAmount } = req.body;
+    const session = await mongoose.startSession();
+    let subscription;
     
-    const subscription = await subscriptionService.createSubscriptionPurchase(req.user._id, purchaseData);
+    try {
+      session.startTransaction();
+      
+      if (usedWallet && walletAmount > 0) {
+        const user = await User.findById(req.user._id).session(session);
+        if (!user || user.wallet < walletAmount) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({ success: false, message: 'Insufficient wallet balance' });
+        }
+        
+        user.wallet -= Number(walletAmount);
+        await user.save({ session });
+        
+        const { WalletTransaction } = require('../models/Others');
+        await WalletTransaction.create([{
+          userId: req.user._id,
+          type: 'debit',
+          amount: Number(walletAmount),
+          description: `Subscription purchase: ${purchaseData.planId || 'Plan'}`,
+          referenceType: 'subscription',
+          balance: user.wallet
+        }], { session });
+        
+        console.log(`💰 Deducted ₹${walletAmount} from user wallet. New balance: ₹${user.wallet}`);
+      }
+
+      console.log('🚀 Calling createSubscriptionPurchase with:', purchaseData);
+      subscription = await subscriptionService.createSubscriptionPurchase(req.user._id, purchaseData, session);
+      
+      await session.commitTransaction();
+      console.log('✅ Subscription transaction committed');
+    } catch (error) {
+      if (session.inTransaction()) await session.abortTransaction();
+      console.error('❌ Subscription purchase transaction failed:', error);
+      session.endSession();
+      return res.status(500).json({ success: false, message: 'Failed to process subscription purchase: ' + error.message });
+    } finally {
+      session.endSession();
+    }
     
-    console.log('✅ Subscription created successfully:', {
-      id: subscription._id,
-      user_id: subscription.user_id,
-      seller_id: subscription.seller_id,
-      status: subscription.status,
-      remaining_amount: subscription.remaining_amount,
-      remaining_days: subscription.remaining_days
-    });
-    
-    // NEW WALLET SYSTEM: Process subscription payment
+    // NEW WALLET SYSTEM: Process subscription payment (distribute to admin/seller)
     try {
       console.log('💰 Processing subscription payment through wallet system');
       
-      // Get plan name if available
       let planName = 'Subscription';
       if (planId) {
         const plan = await SubscriptionPlan.findById(planId);
@@ -165,14 +197,11 @@ exports.purchase = async (req, res) => {
       console.log('✅ Subscription payment processed through wallet system');
     } catch (walletError) {
       console.error('❌ Wallet processing error:', walletError);
-      // Don't fail the subscription creation if wallet processing fails
-      // It can be reconciled later
     }
     
     res.status(201).json({ success: true, subscription });
   } catch (e) {
     console.error('❌ Error in purchase:', e.message);
-    console.error('❌ Error stack:', e.stack);
     res.status(e.status || 500).json({ success: false, message: e.message });
   }
 };

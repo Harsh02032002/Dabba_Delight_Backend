@@ -61,6 +61,11 @@ if (!process.env.FRONTEND_URL) {
   console.log('🔄 Using fallback FRONTEND_URL');
 }
 
+if (!process.env.BACKEND_URL) {
+  process.env.BACKEND_URL = process.env.NODE_ENV === 'production' ? 'https://api.dabbanation.in' : `http://localhost:${process.env.PORT || 5000}`;
+  console.log('🔄 Using fallback BACKEND_URL:', process.env.BACKEND_URL);
+}
+
 if (!process.env.JWT_SECRET && fs.existsSync(envPath)) {
   try {
     const v = fs.readFileSync(envPath, 'utf8').match(/JWT_SECRET\s*=\s*([^\r\n#]+)/)?.[1]?.trim();

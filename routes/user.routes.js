@@ -20,7 +20,7 @@ router.patch('/address/:id/set-default', auth, lc.setDefaultAddress);
 router.get('/sellers/nearby', auth, lc.getNearbySellers);
 router.post('/reverse-geocode', auth, lc.reverseGeocode);
 
-// Dabba Express — subscriptions
+// Dabba Nation — subscriptions
 router.get('/subscriptions/active', auth, subController.getActiveForUser);
 router.get('/subscriptions/my-subscriptions', auth, subController.getMySubscriptions);
 router.post('/subscriptions/purchase', auth, subController.purchase);

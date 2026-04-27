@@ -5,10 +5,10 @@ const orderSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   sellerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Seller', required: true },
   items: [{
-    menuItemId: { 
-      type: mongoose.Schema.Types.ObjectId, 
-      ref: 'Product', 
-      set: v => v.startsWith('custom-') ? new mongoose.Types.ObjectId() : v 
+    menuItemId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Product',
+      set: v => v.startsWith('custom-') ? new mongoose.Types.ObjectId() : v
     },
     name: String,
     sellingPrice: Number,
@@ -49,7 +49,7 @@ const orderSchema = new mongoose.Schema({
   igst: { type: Number, default: 0 },
   commission: { type: Number, default: 0 },
   commissionGST: { type: Number, default: 0 },
-  /** Dabba Express subscription */
+  /** Dabba Nation subscription */
   subscriptionAmountUsed: { type: Number, default: 0 },
   subscriptionDaysDeducted: { type: Number, default: 0 },
   payableAfterSubscription: { type: Number, default: 0 },
@@ -68,7 +68,7 @@ const orderSchema = new mongoose.Schema({
   statusHistory: [{
     status: String,
     timestamp: { type: Date, default: Date.now },
-    updatedBy: { 
+    updatedBy: {
       type: mongoose.Schema.Types.Mixed,
       default: null
     },
@@ -76,7 +76,7 @@ const orderSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Auto-generate order number
-orderSchema.pre('save', async function() {
+orderSchema.pre('save', async function () {
   if (!this.orderNumber) {
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const count = await mongoose.model('Order').countDocuments();
