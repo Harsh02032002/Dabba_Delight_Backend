@@ -93,7 +93,7 @@ app.use(compression({
 // ─── Socket.IO ──────────────────────────────────────
 const io = new Server(server, {
   cors: { 
-    origin: ['http://localhost:8081', 'http://localhost:8082', 'http://localhost:8080', 'http://localhost:5173','http://56.228.4.127'], 
+    origin: ['http://localhost:8081', 'http://localhost:8082', 'http://localhost:8080', 'http://localhost:5173','http://56.228.4.127', 'http://13.62.196.51'], 
     methods: ['GET', 'POST'] 
   },
 });
@@ -260,7 +260,7 @@ app.set('io', io);
 // ─── Middleware ──────────────────────────────────────
 // Enable compression for CORS preflight
 app.use(cors({ 
-  origin: ['http://localhost:8081', 'http://localhost:8082', 'http://localhost:8080', 'http://localhost:5173'], 
+  origin: ['http://localhost:8081', 'http://localhost:8082', 'http://localhost:8080', 'http://localhost:5173', 'http://13.62.196.51'], 
   credentials: true 
 }));
 
