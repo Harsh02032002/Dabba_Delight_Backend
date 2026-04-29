@@ -71,6 +71,8 @@ router.get('/performance-insights', sellerAuth, sc.getPerformanceInsights);
 // Profile
 router.get('/profile', sellerAuth, sc.getProfile);
 router.put('/profile', sellerAuth, sc.updateProfile);
+router.post('/profile/logo', sellerAuth, ...s3Upload('logo', 'seller-logos'), sc.updateLogo);
+router.post('/profile/cover', sellerAuth, ...s3Upload('coverImage', 'seller-banners'), sc.updateCoverImage);
 
 // Settings
 router.get('/settings/notifications', sellerAuth, sc.getNotificationPreferences);

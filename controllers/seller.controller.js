@@ -10,6 +10,9 @@ const {
   SupportTicket, Notification, NotificationPreference,
 } = require('../models/Others');
 
+const DEFAULT_LOGO = '';
+const DEFAULT_COVER = '';
+
 // ─── Dashboard ──────────────────────────────────
 exports.getDashboard = async (req, res) => {
   try {
@@ -446,11 +449,27 @@ exports.getPerformanceInsights = async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
+const normalizeUrl = (url, fallback) => {
+  if (!url) return fallback;
+  if (url.startsWith('http')) return url;
+  // If it's a relative path, assume it's from the bucket or server (S3 bucket is default)
+  const BUCKET = process.env.AWS_S3_BUCKET || 'dabba-nation-uploads';
+  const REGION = process.env.AWS_REGION || 'ap-south-1';
+  if (url.startsWith('/')) return `https://${BUCKET}.s3.${REGION}.amazonaws.com${url}`;
+  return `https://${BUCKET}.s3.${REGION}.amazonaws.com/${url}`;
+};
+
 // ─── Profile ────────────────────────────────────
 exports.getProfile = async (req, res) => {
   try {
-    const seller = await Seller.findById(req.seller._id).populate('userId', 'name email phone');
-    res.json({ success: true, ...seller.toObject() });
+    const seller = await Seller.findById(req.seller._id).populate('userId', 'name email phone').lean();
+    if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+    
+    // Normalize images and add defaults
+    seller.logo = normalizeUrl(seller.logo, DEFAULT_LOGO);
+    seller.coverImage = normalizeUrl(seller.coverImage, DEFAULT_COVER);
+    
+    res.json({ success: true, ...seller });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
@@ -459,8 +478,13 @@ exports.updateProfile = async (req, res) => {
     const allowed = ['businessName', 'description', 'phone', 'email', 'type', 'operatingHours', 'address', 'bankDetails', 'fssaiLicense', 'gstNumber', 'cuisines', 'tags'];
     const updates = {};
     allowed.forEach(k => { if (req.body[k] !== undefined) updates[k] = req.body[k]; });
-    const seller = await Seller.findByIdAndUpdate(req.seller._id, updates, { new: true });
-    res.json({ success: true, ...seller.toObject() });
+    const seller = await Seller.findByIdAndUpdate(req.seller._id, updates, { new: true }).lean();
+    
+    // Normalize images and add defaults
+    seller.logo = normalizeUrl(seller.logo, DEFAULT_LOGO);
+    seller.coverImage = normalizeUrl(seller.coverImage, DEFAULT_COVER);
+
+    res.json({ success: true, ...seller });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
@@ -499,12 +523,15 @@ exports.updateLogo = async (req, res) => {
     if (!logoUrl) return res.status(400).json({ success: false, message: 'No file uploaded' });
     
     // Update user avatar and seller logo
-    const User = require('../models/User');
     await User.findByIdAndUpdate(req.user._id, { avatar: logoUrl });
     
-    const seller = await Seller.findOneAndUpdate({ userId: req.user._id }, { logo: logoUrl }, { new: true });
+    const seller = await Seller.findOneAndUpdate({ userId: req.user._id }, { logo: logoUrl }, { new: true }).lean();
     
-    res.json({ success: true, logo: seller.logo });
+    // Normalize images and add defaults
+    seller.logo = normalizeUrl(seller.logo, DEFAULT_LOGO);
+    seller.coverImage = normalizeUrl(seller.coverImage, DEFAULT_COVER);
+
+    res.json({ success: true, ...seller });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -516,9 +543,13 @@ exports.updateCoverImage = async (req, res) => {
     const coverUrl = req.file?.s3Url || req.file?.location || req.file?.path;
     if (!coverUrl) return res.status(400).json({ success: false, message: 'No file uploaded' });
     
-    const seller = await Seller.findOneAndUpdate({ userId: req.user._id }, { coverImage: coverUrl }, { new: true });
+    const seller = await Seller.findOneAndUpdate({ userId: req.user._id }, { coverImage: coverUrl }, { new: true }).lean();
     
-    res.json({ success: true, coverImage: seller.coverImage });
+    // Normalize images and add defaults
+    seller.logo = normalizeUrl(seller.logo, DEFAULT_LOGO);
+    seller.coverImage = normalizeUrl(seller.coverImage, DEFAULT_COVER);
+
+    res.json({ success: true, ...seller });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

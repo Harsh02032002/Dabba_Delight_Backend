@@ -293,7 +293,13 @@ exports.updateAvatar = async (req, res) => {
   try {
     const avatarUrl = req.file?.s3Url || req.file?.location || req.file?.path;
     if (!avatarUrl) return res.status(400).json({ success: false, message: 'No file uploaded' });
+    
     const user = await User.findByIdAndUpdate(req.user._id, { avatar: avatarUrl }, { new: true });
+    
+    // Also update seller profile if user is a seller
+    const Seller = require('../models/Seller');
+    await Seller.findOneAndUpdate({ userId: req.user._id }, { logo: avatarUrl }, { new: true });
+    
     res.json({ success: true, avatar: user.avatar });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

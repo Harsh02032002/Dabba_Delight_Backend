@@ -67,6 +67,9 @@ exports.getWalletTransactions = async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
+const DEFAULT_LOGO = 'https://images.unsplash.com/photo-1495195129352-aec325b55b65?w=200&h=200&fit=crop&q=80';
+const DEFAULT_COVER = 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=1000&h=400&fit=crop&q=80';
+
 // ─── User Sellers & Menu ────────────────────────
 exports.getSellers = async (req, res) => {
   try {
@@ -75,10 +78,19 @@ exports.getSellers = async (req, res) => {
     if (req.query.search) filter.businessName = { $regex: req.query.search, $options: 'i' };
     // Select only required fields for faster response
     const sellers = await Seller.find(filter)
-      .select('_id businessName type logo coverImage rating totalOrders totalRevenue cuisines address.city address.state isActive isVerified')
+      .select('_id businessName type logo coverImage rating totalOrders totalRevenue cuisines address.city address.state isActive isVerified description')
       .sort({ rating: -1 })
       .lean(); // Use lean() for faster queries
-    res.json({ success: true, sellers, total: sellers.length });
+
+    // Add default images if missing
+    const sellersWithImages = sellers.map(seller => ({
+      ...seller,
+      logo: seller.logo || DEFAULT_LOGO,
+      coverImage: seller.coverImage || DEFAULT_COVER,
+      image: seller.coverImage || DEFAULT_COVER, // Also provide 'image' for mobile app compatibility
+    }));
+
+    res.json({ success: true, sellers: sellersWithImages, total: sellers.length });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
@@ -113,10 +125,18 @@ exports.getSellerById = async (req, res) => {
   try {
     // Select only required fields
     const seller = await Seller.findById(req.params.id)
-      .select('-bankDetails -kycDocuments.aadhaar -kycDocuments.pan -kycDocuments.fssai -kycDocuments.bankProof');
+      .select('-bankDetails -kycDocuments.aadhaar -kycDocuments.pan -kycDocuments.fssai -kycDocuments.bankProof')
+      .lean();
+
     if (!seller) {
       return res.status(404).json({ success: false, message: 'Seller not found' });
     }
+
+    // Add default images if missing
+    seller.logo = seller.logo || DEFAULT_LOGO;
+    seller.coverImage = seller.coverImage || DEFAULT_COVER;
+    seller.image = seller.coverImage || DEFAULT_COVER;
+
     res.json({ success: true, seller });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

@@ -40,7 +40,6 @@ async function uploadToS3(file, folder = 'products') {
     Key: uniqueName,
     Body: file.buffer,
     ContentType: file.mimetype,
-    ACL: 'public-read',
   });
 
   await s3.send(command);
