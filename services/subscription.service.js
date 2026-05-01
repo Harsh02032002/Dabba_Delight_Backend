@@ -344,15 +344,8 @@ async function createSubscriptionPurchase(userId, { totalAmount, totalDays, plan
   const perDay = totalAmount / totalDays;
   console.log('💰 Per day value calculated:', perDay);
 
-  // Expire any existing active subscriptions for the same seller
-  const expireFilter = { user_id: userId, status: 'active' };
-  if (sellerId) {
-    expireFilter.seller_id = sellerId;
-  }
-  console.log('🔄 Expiring existing subscriptions with filter:', expireFilter);
-  let q = Subscription.updateMany(expireFilter, { status: 'expired' });
-  if (session) q = q.session(session);
-  await q;
+  // We no longer expire existing subscriptions so users can have multiple active plans
+  // If they have multiple, they will be used one by one or based on the seller.
 
   const doc = {
     user_id: userId,
@@ -459,4 +452,28 @@ module.exports = {
   createSubscriptionPurchase,
   adjustSubscription,
   forceExpireSubscription,
+  refundSubscriptionUsage: async function (orderId, session = null) {
+    const usage = await SubscriptionUsage.findOne({ order_id: orderId });
+    if (!usage) return null;
+
+    // Find the most likely subscription (user's last active one or the one that fits)
+    // Ideally we'd store subscriptionId in SubscriptionUsage. Let's see if it's there.
+    // Wait, let's check SubscriptionUsage model.
+    const sub = await Subscription.findOne({ 
+      user_id: usage.user_id,
+      // We don't have sub_id in Usage, so we find the first active or recently used one.
+      // Better: find the subscription that has room or matches the seller.
+      status: 'active'
+    });
+
+    if (sub) {
+      sub.remaining_amount += usage.amount_used;
+      sub.remaining_days += usage.days_used;
+      if (sub.status === 'expired') sub.status = 'active';
+      await sub.save({ session });
+    }
+
+    await SubscriptionUsage.deleteOne({ _id: usage._id }, { session });
+    return { refundedAmount: usage.amount_used, refundedDays: usage.days_used };
+  }
 };

@@ -476,7 +476,7 @@ exports.updateDeliveryStatus = async (req, res) => {
         title: '🏃 Delivery Partner Arrived',
         message: `Delivery partner has arrived at your restaurant`,
         orderId: orderId,
-        read: false
+        isRead: false
       });
 
       if (io) {
@@ -495,7 +495,7 @@ exports.updateDeliveryStatus = async (req, res) => {
         title: '🛵 Order Picked Up',
         message: `Your order #${order.orderNumber} is on the way`,
         orderId: orderId,
-        read: false
+        isRead: false
       });
 
       if (io) {
@@ -523,7 +523,7 @@ exports.updateDeliveryStatus = async (req, res) => {
         title: '✅ Order Delivered',
         message: `Your order #${order.orderNumber} has been delivered`,
         orderId: orderId,
-        read: false
+        isRead: false
       });
 
       if (io) {

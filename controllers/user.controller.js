@@ -42,6 +42,15 @@ exports.topupWallet = async (req, res) => {
       userId: req.user._id, type: 'credit', amount, description: 'Wallet top-up',
       referenceType: 'topup', balance: user.wallet,
     });
+    
+    // ─── Create Notification for Wallet Top-up ───
+    await Notification.create({
+      userId: req.user._id,
+      type: 'wallet',
+      title: '💳 Wallet Topped Up',
+      message: `₹${amount} has been successfully added to your wallet. Current Balance: ₹${user.wallet}`,
+      isRead: false,
+    });
     res.json({ success: true, wallet: user.wallet });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
@@ -54,6 +63,15 @@ exports.verifyWalletPayment = async (req, res) => {
     await WalletTransaction.create({
       userId: req.user._id, type: 'credit', amount, description: 'Wallet top-up verified',
       referenceType: 'topup', balance: user.wallet,
+    });
+    
+    // ─── Create Notification for Wallet Top-up ───
+    await Notification.create({
+      userId: req.user._id,
+      type: 'wallet',
+      title: '💳 Wallet Top-up Successful',
+      message: `Your payment of ₹${amount} was verified and added to your wallet. Current Balance: ₹${user.wallet}`,
+      isRead: false,
     });
     res.json({ success: true, wallet: user.wallet });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }

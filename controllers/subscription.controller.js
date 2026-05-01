@@ -5,7 +5,7 @@ const User = require('../models/User');
 const mongoose = require('mongoose');
 const subscriptionService = require('../services/subscription.service');
 const Order = require('../models/Order');
-const WalletTransaction = require('../models/WalletTransaction');
+const { WalletTransaction, Notification } = require('../models/Others');
 const walletController = require('../controllers/wallet.controller');
 
 // ============= USER CONTROLLERS =============
@@ -199,6 +199,19 @@ exports.purchase = async (req, res) => {
       console.error('❌ Wallet processing error:', walletError);
     }
     
+    // ─── Create Notification for User ───
+    try {
+      await Notification.create({
+        userId: req.user._id,
+        type: 'subscription',
+        title: '⭐ Subscription Active!',
+        message: `Your subscription has been successfully activated. Enjoy your meals!`,
+        isRead: false,
+      });
+    } catch (notifErr) {
+      console.error('❌ Failed to create subscription notification:', notifErr.message);
+    }
+
     res.status(201).json({ success: true, subscription });
   } catch (e) {
     console.error('❌ Error in purchase:', e.message);
@@ -466,6 +479,25 @@ exports.adminCreatePlan = async (req, res) => {
     
     const plan = new SubscriptionPlan(planData);
     await plan.save();
+
+    // ─── Notify all users about the new plan ───
+    try {
+      const users = await User.find({ role: 'user' }, '_id');
+      if (users.length > 0) {
+        const notifications = users.map(user => ({
+          userId: user._id,
+          type: 'general',
+          title: '✨ New Subscription Plan!',
+          message: `Check out our new plan: ${plan.plan_name}`,
+          isRead: false
+        }));
+        await Notification.insertMany(notifications);
+        console.log(`✅ Sent new plan notification to ${users.length} users`);
+      }
+    } catch (notifErr) {
+      console.error('❌ Failed to broadcast new plan notification:', notifErr.message);
+    }
+
     res.status(201).json({ success: true, plan });
   } catch (e) {
     console.error('Create plan error:', e);
@@ -631,6 +663,19 @@ exports.adminAssignSubscription = async (req, res) => {
     );
     
     await session.commitTransaction();
+
+    // ─── Create Notification for User ───
+    try {
+      await Notification.create({
+        userId: userId,
+        type: 'subscription',
+        title: '⭐ Subscription Assigned',
+        message: `Admin has assigned you a new subscription plan! Enjoy your meals!`,
+        isRead: false,
+      });
+    } catch (notifErr) {
+      console.error('❌ Failed to create assigned subscription notification:', notifErr.message);
+    }
     
     res.status(201).json({ 
       success: true, 
@@ -658,6 +703,20 @@ exports.adminAdjustSubscription = async (req, res) => {
       }
     );
     
+    // ─── Create Notification for User ───
+    try {
+      if (subscription && subscription.user_id) {
+        await Notification.create({
+          userId: subscription.user_id,
+          type: 'subscription',
+          title: '⚖️ Subscription Adjusted',
+          message: `Your subscription has been adjusted: +₹${addBalance || 0}, +${addDays || 0} days. Reason: ${reason || 'Admin adjustment'}`,
+          isRead: false,
+        });
+      }
+    } catch (notifErr) {
+      console.error('❌ Failed to create adjusted subscription notification:', notifErr.message);
+    }
     res.json({ 
       success: true, 
       subscription,
@@ -677,6 +736,21 @@ exports.adminForceExpire = async (req, res) => {
       reason
     );
     
+    // ─── Create Notification for User ───
+    try {
+      if (subscription && subscription.user_id) {
+        await Notification.create({
+          userId: subscription.user_id,
+          type: 'subscription',
+          title: '⚠️ Subscription Expired',
+          message: `Your subscription has been expired by the admin. Reason: ${reason || 'N/A'}`,
+          isRead: false,
+        });
+      }
+    } catch (notifErr) {
+      console.error('❌ Failed to create force expire subscription notification:', notifErr.message);
+    }
+
     res.json({ 
       success: true, 
       subscription,
