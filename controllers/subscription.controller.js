@@ -24,27 +24,18 @@ exports.getActiveForUser = async (req, res) => {
       console.log(`  [${i}] status: ${sub.status}, remaining: ${sub.remaining_amount}/${sub.remaining_days}`);
     });
     
-    // Find the MOST RECENT active subscription
-    const subscription = await Subscription.findOne({
+    // Find ALL active subscriptions
+    const subscriptions = await Subscription.find({
       user_id: req.user._id,
       status: 'active',
     })
-    .sort({ createdAt: -1 }) // Get the newest one first
+    .sort({ createdAt: -1 }) // Newest first
     .populate('plan_id', 'plan_name description features')
     .populate('seller_id', 'businessName type logo');
     
-    console.log('📋 Active subscription found:', subscription ? 'Yes' : 'No');
-    if (subscription) {
-      console.log('📋 Subscription details:', {
-        id: subscription._id,
-        seller_id: subscription.seller_id?._id,
-        seller_name: subscription.seller_id?.businessName,
-        remaining_amount: subscription.remaining_amount,
-        remaining_days: subscription.remaining_days
-      });
-    }
+    console.log(`📋 ${subscriptions.length} active subscriptions found`);
     
-    res.json({ success: true, subscription });
+    res.json({ success: true, subscriptions });
   } catch (e) {
     console.error('❌ Error in getActiveForUser:', e);
     res.status(500).json({ success: false, message: e.message });

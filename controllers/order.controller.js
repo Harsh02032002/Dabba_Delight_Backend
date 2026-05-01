@@ -452,7 +452,7 @@ exports.cancelOrder = async (req, res) => {
     // ─── Refund to Subscription ────────────────────
     try {
       if (order.subscriptionAmountUsed > 0) {
-        await subService.refundSubscriptionUsage(order._id);
+        await subscriptionService.refundSubscriptionUsage(order._id);
         await Notification.create({
           userId: order.userId,
           type: 'order',
