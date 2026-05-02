@@ -8,9 +8,10 @@ const subscriptionPlanSchema = new mongoose.Schema(
     total_days: { type: Number, required: true, min: 1 },
     per_day_value: { type: Number, required: true, min: 0 },
     
-    // Banner image for the subscription card
+    // Image fields for compatibility across different frontends
     banner_image: { type: String, default: null },
     image: { type: String, default: null },
+    plan_image: { type: String, default: null },
 
     // Seller this subscription is tied to
     assigned_seller_id: {

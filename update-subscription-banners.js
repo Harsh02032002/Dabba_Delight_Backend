@@ -30,6 +30,7 @@ async function updateBanners() {
       
       plan.banner_image = imageUrl;
       plan.image = imageUrl;
+      plan.plan_image = imageUrl;
       await plan.save();
     }
 
