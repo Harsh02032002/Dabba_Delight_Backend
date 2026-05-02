@@ -475,7 +475,7 @@ exports.getProfile = async (req, res) => {
 
 exports.updateProfile = async (req, res) => {
   try {
-    const allowed = ['businessName', 'description', 'phone', 'email', 'type', 'operatingHours', 'address', 'bankDetails', 'fssaiLicense', 'gstNumber', 'cuisines', 'tags'];
+    const allowed = ['businessName', 'description', 'phone', 'email', 'type', 'operatingHours', 'address', 'bankDetails', 'fssaiLicense', 'gstNumber', 'cuisines', 'tags', 'logo', 'coverImage'];
     const updates = {};
     allowed.forEach(k => { if (req.body[k] !== undefined) updates[k] = req.body[k]; });
     const seller = await Seller.findByIdAndUpdate(req.seller._id, updates, { new: true }).lean();
