@@ -746,6 +746,154 @@ const platformConfigSchema = new mongoose.Schema(
         "The technical development and platform engineering of Dabba Nation is led by Harshdeep, who plays a key role in building, managing, and improving the technology infrastructure that powers the Dabba Nation platform.",
     },
     aboutUdyamNumber: { type: String, default: "UDYAM-UP-21-0060612" },
+
+    // ── Contact Page ─────────────────────────────────
+    contactWorkingHours: {
+      type: String,
+      default: "Monday – Saturday, 9:00 AM – 9:00 PM IST",
+    },
+
+    // ── Footer Bottom ────────────────────────────────
+    footerCopyright: { type: String, default: "Made with ❤️ in India" },
+
+    // ── Static Page Content (JSON arrays) ────────────
+    privacyPageContent: {
+      type: String,
+      default: JSON.stringify([
+        {
+          title: "1. Information We Collect",
+          content:
+            "We collect information you provide directly, including your name, email address, phone number, delivery addresses, payment details, and order history. We also collect device information, IP addresses, and usage data automatically.",
+        },
+        {
+          title: "2. How We Use Your Information",
+          content:
+            "• To process and deliver your food orders\n• To communicate order updates and delivery status\n• To provide customer support\n• To personalize your experience and recommendations\n• To process payments securely\n• To improve our platform and services\n• To send promotional offers (with your consent)",
+        },
+        {
+          title: "3. Information Sharing",
+          content:
+            "We share your information only with:\n• Sellers/restaurants to fulfill your orders\n• Delivery partners for order delivery\n• Payment processors for secure transactions\n• As required by law or legal proceedings\n\nWe never sell your personal data to third parties.",
+        },
+        {
+          title: "4. Data Security",
+          content:
+            "We implement industry-standard security measures including encryption, secure servers, and regular security audits to protect your personal information.",
+        },
+        {
+          title: "5. Cookies & Tracking",
+          content:
+            "We use cookies and similar technologies to enhance your browsing experience, remember your preferences, and analyze platform usage.",
+        },
+        {
+          title: "6. Your Rights",
+          content:
+            "You have the right to access, update, or delete your personal data. You can manage your preferences in your account settings or contact us at support@dabbanation.com.",
+        },
+        {
+          title: "7. Contact Us",
+          content:
+            "For privacy-related questions, contact us at:\nEmail: support@dabbanation.com\nPhone: +91 73030 23539\nAddress: East Shastri Nagar, Ram Gulam Tola, Deoria 274001",
+        },
+      ]),
+    },
+
+    termsPageContent: {
+      type: String,
+      default: JSON.stringify([
+        {
+          title: "1. Acceptance of Terms",
+          content:
+            "By accessing or using Dabba Nation's platform, you agree to be bound by these Terms of Service. If you do not agree, please do not use our services.",
+        },
+        {
+          title: "2. Account Registration",
+          content:
+            "You must provide accurate, complete information when creating an account. You are responsible for maintaining the confidentiality of your account credentials and for all activities under your account.",
+        },
+        {
+          title: "3. Orders & Payments",
+          content:
+            "• All orders are subject to acceptance by the seller\n• Prices displayed include applicable taxes unless stated otherwise\n• Payment can be made via Razorpay (UPI, cards, netbanking) or Cash on Delivery\n• Orders once confirmed cannot be modified; cancellation policies apply",
+        },
+        {
+          title: "4. Delivery",
+          content:
+            "Delivery times are estimates and may vary based on distance, traffic, and order volume. We strive to deliver within the estimated timeframe but do not guarantee exact delivery times.",
+        },
+        {
+          title: "5. Seller Responsibilities",
+          content:
+            "Sellers on our platform are responsible for food quality, hygiene, accurate menu descriptions, and timely preparation. Dabba Nation acts as a marketplace facilitator.",
+        },
+        {
+          title: "6. User Conduct",
+          content:
+            "Users must not misuse the platform, submit fraudulent orders, harass delivery partners or sellers, or engage in any activity that violates applicable laws.",
+        },
+        {
+          title: "7. Intellectual Property",
+          content:
+            "All content on Dabba Nation, including logos, designs, and text, is owned by Dabba Nation and protected by intellectual property laws.",
+        },
+        {
+          title: "8. Limitation of Liability",
+          content:
+            "Dabba Nation is not liable for any food quality issues, allergic reactions, delivery delays beyond our control, or any indirect/consequential damages arising from the use of our platform.",
+        },
+        {
+          title: "9. Changes to Terms",
+          content:
+            "We reserve the right to modify these terms at any time. Continued use of the platform after changes constitutes acceptance of the updated terms.",
+        },
+        {
+          title: "10. Contact",
+          content:
+            "For questions about these terms, contact us at support@dabbanation.com.",
+        },
+      ]),
+    },
+
+    refundPageContent: {
+      type: String,
+      default: JSON.stringify([
+        {
+          title: "1. Order Cancellation",
+          content:
+            "• Before confirmation: Full refund if cancelled before the seller confirms the order\n• After confirmation: Cancellation may not be possible once the seller has started preparing your order\n• After dispatch: Orders cannot be cancelled once out for delivery",
+        },
+        {
+          title: "2. Refund Eligibility",
+          content:
+            "You may be eligible for a refund in the following cases:\n• Wrong items delivered\n• Missing items from your order\n• Food quality issues (spoiled, stale, or contaminated food)\n• Order not delivered within a reasonable timeframe\n• Significant difference between menu description and actual product",
+        },
+        {
+          title: "3. Refund Process",
+          content:
+            "• Report issues within 24 hours of delivery through the app or website\n• Provide photos/evidence of the issue when applicable\n• Our team will review your complaint within 24-48 hours\n• Approved refunds will be processed within 5-7 business days",
+        },
+        {
+          title: "4. Refund Methods",
+          content:
+            "• Online payments (Razorpay): Refund to original payment method\n• Cash on Delivery: Refund credited to Dabba Nation wallet\n• Wallet payments: Refund to Dabba Nation wallet",
+        },
+        {
+          title: "5. Non-Refundable Cases",
+          content:
+            "• Change of mind after order is confirmed\n• Incorrect delivery address provided by user\n• Delay due to factors beyond our control (weather, traffic, etc.)\n• Issues reported after 24 hours of delivery",
+        },
+        {
+          title: "6. Delivery Fee Refund",
+          content:
+            "Delivery fees are non-refundable unless the entire order is cancelled before confirmation or the order was not delivered at all.",
+        },
+        {
+          title: "7. Contact Us",
+          content:
+            "For refund-related queries, contact us at:\nEmail: support@dabbanation.com\nPhone: +91 73030 23539",
+        },
+      ]),
+    },
   },
   { timestamps: true },
 );
