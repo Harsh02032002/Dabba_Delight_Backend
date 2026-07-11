@@ -114,8 +114,21 @@ exports.getSellers = async (req, res) => {
 
 exports.getMenuItems = async (req, res) => {
   try {
+    // Build product filter
     const filter = { isAvailable: true, status: 'published', isAdminApproved: true };
-    if (req.query.sellerId) filter.sellerId = req.query.sellerId;
+    
+    // If sellerIds passed directly (from frontend nearby sellers), use them
+    if (req.query.sellerIds) {
+      const ids = req.query.sellerIds.split(',').filter(Boolean);
+      filter.sellerId = { $in: ids };
+    } else if (req.query.sellerId) {
+      filter.sellerId = req.query.sellerId;
+    } else if (req.query.type) {
+      // Filter by seller type
+      const typeSellers = await Seller.find({ isActive: true, type: req.query.type }).select('_id').lean();
+      filter.sellerId = { $in: typeSellers.map(s => s._id) };
+    }
+    
     if (req.query.category) filter.category = req.query.category;
     if (req.query.isVeg === 'true') filter.isVeg = true;
     if (req.query.search) filter.$or = [
@@ -123,16 +136,13 @@ exports.getMenuItems = async (req, res) => {
       { tags: { $regex: req.query.search, $options: 'i' } },
     ];
 
-    // Select only required fields for faster response
-    let query = Product.find(filter)
+    const products = await Product.find(filter)
       .select('_id sellerId name description sellingPrice discountPrice category image isVeg preparationTime rating totalOrders stock')
       .populate('sellerId', '_id businessName type logo rating')
       .sort({ rating: -1 })
-      .lean(); // Use lean() for faster queries
-
-    const products = await query
-      .limit(Number(req.query.limit) || 20)
-      .skip(((Number(req.query.page) || 1) - 1) * (Number(req.query.limit) || 20));
+      .limit(Number(req.query.limit) || 50)
+      .skip(((Number(req.query.page) || 1) - 1) * (Number(req.query.limit) || 50))
+      .lean();
     
     const total = await Product.countDocuments(filter);
     res.json({ success: true, products, total });

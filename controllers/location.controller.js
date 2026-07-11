@@ -77,7 +77,9 @@ exports.getNearbySellers = async (req, res) => {
         $near: { $geometry: { type: 'Point', coordinates: [Number(lng), Number(lat)] }, $maxDistance: Number(radius) },
       };
     }
+    console.log('[getNearbySellers] filter:', JSON.stringify(filter));
     const sellers = await Seller.find(filter).limit(50);
+    console.log('[getNearbySellers] found:', sellers.length, sellers.map(s => ({ id: s._id, name: s.businessName, type: s.type, coords: s.address?.location?.coordinates })));
     res.json({ success: true, sellers });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

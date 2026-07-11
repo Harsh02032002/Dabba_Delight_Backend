@@ -6,6 +6,7 @@ const subController = require('../controllers/subscription.controller');
 
 // Sellers & Menu (public)
 router.get('/sellers', uc.getSellers);
+router.get('/sellers/nearby', lc.getNearbySellers);
 router.get('/sellers/:id', uc.getSellerById);
 router.get('/menu', uc.getMenuItems);
 router.get('/recommendations', uc.getRecommendations);
@@ -17,7 +18,6 @@ router.get('/addresses', auth, lc.getAddresses);
 router.put('/address/:id', auth, lc.updateAddress);
 router.delete('/address/:id', auth, lc.deleteAddress);
 router.patch('/address/:id/set-default', auth, lc.setDefaultAddress);
-router.get('/sellers/nearby', auth, lc.getNearbySellers);
 router.post('/reverse-geocode', auth, lc.reverseGeocode);
 
 // Dabba Nation — subscriptions
