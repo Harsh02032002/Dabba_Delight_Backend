@@ -35,7 +35,7 @@ const sellerWalletSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Indexes
-sellerWalletSchema.index({ seller_id: 1 });
+// Note: seller_id already has unique:true (no need to re-declare)
 sellerWalletSchema.index({ pending_payout: -1 });
 
 module.exports = mongoose.models.SellerWallet || mongoose.model('SellerWallet', sellerWalletSchema);

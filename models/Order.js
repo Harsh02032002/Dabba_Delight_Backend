@@ -88,7 +88,7 @@ orderSchema.pre('save', async function () {
 orderSchema.index({ userId: 1, createdAt: -1 });
 orderSchema.index({ sellerId: 1, createdAt: -1 });
 orderSchema.index({ status: 1 });
-orderSchema.index({ orderNumber: 1 });
+// Note: orderNumber already has unique:true (no need to re-declare)
 orderSchema.index({ paymentStatus: 1 });
 orderSchema.index({ deliveryPartnerId: 1 });
 orderSchema.index({ 'deliveryAddress.location': '2dsphere' });

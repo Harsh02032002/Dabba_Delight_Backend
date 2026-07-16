@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const subscriptionSchema = new mongoose.Schema(
   {
     user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    seller_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Seller', index: true }, // Seller/restaurant this subscription is for
+    seller_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Seller' }, // Seller/restaurant this subscription is for
     plan_id: { type: mongoose.Schema.Types.ObjectId, ref: 'SubscriptionPlan', default: null },
     total_amount: { type: Number, required: true, min: 0 },
     remaining_amount: { type: Number, required: true, min: 0 },
