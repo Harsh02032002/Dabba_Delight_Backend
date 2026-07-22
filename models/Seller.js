@@ -66,7 +66,7 @@ sellerSchema.index({ rating: -1 });
 sellerSchema.index({ totalOrders: -1 });
 sellerSchema.index({ 'address.city': 1 });
 sellerSchema.index({ cuisines: 1 });
-sellerSchema.index({ referralCode: 1 });
+// Note: referralCode already has unique:true (no need to re-declare)
 sellerSchema.index({ createdAt: -1 });
 
 module.exports = mongoose.model('Seller', sellerSchema);

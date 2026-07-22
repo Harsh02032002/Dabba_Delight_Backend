@@ -11,14 +11,48 @@ exports.loginPartner = async (req, res) => {
     if (!email || !password) {
       return res.status(400).json({ success: false, message: 'Email and password required' });
     }
+
+    const cleanInput = email.trim();
+    const cleanEmail = cleanInput.toLowerCase();
     
-    // Find user with delivery role and include password
-    const user = await User.findOne({ email, role: 'delivery' }).select('+password');
-    if (!user) return res.status(404).json({ success: false, message: 'Partner not found' });
-    
-    // Find partner profile
-    const partner = await DeliveryPartner.findOne({ userId: user._id });
-    if (!partner) return res.status(404).json({ success: false, message: 'Partner profile not found' });
+    // Find user with delivery role or by email/phone
+    let user = await User.findOne({
+      $or: [
+        { email: cleanEmail },
+        { phone: cleanInput }
+      ]
+    }).select('+password');
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'Partner account not found' });
+    }
+
+    // Ensure role is delivery or update/allow if they have partner profile
+    if (user.role !== 'delivery') {
+      const existingPartner = await DeliveryPartner.findOne({ userId: user._id });
+      if (existingPartner) {
+        user.role = 'delivery';
+        await user.save();
+      } else {
+        return res.status(403).json({ success: false, message: 'Account is not registered as a delivery partner' });
+      }
+    }
+
+    // Find or auto-create partner profile if missing
+    let partner = await DeliveryPartner.findOne({ userId: user._id });
+    if (!partner) {
+      console.log(`⚠️ DeliveryPartner profile missing for ${user.email}, auto-creating...`);
+      partner = await DeliveryPartner.create({
+        userId: user._id,
+        name: user.name || 'Partner',
+        phone: user.phone || user.email,
+        email: user.email,
+        currentLocation: {
+          type: 'Point',
+          coordinates: [0, 0]
+        }
+      });
+    }
     
     // Check if user is blocked
     if (user.isBlocked) {

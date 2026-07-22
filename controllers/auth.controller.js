@@ -124,7 +124,18 @@ exports.register = async (req, res) => {
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
-    const user = await User.findOne({ email }).select('+password');
+    if (!email || !password) {
+      return res.status(400).json({ success: false, message: 'Email/Phone and password required' });
+    }
+    const cleanInput = email.trim();
+    const cleanEmail = cleanInput.toLowerCase();
+    
+    const user = await User.findOne({
+      $or: [
+        { email: cleanEmail },
+        { phone: cleanInput }
+      ]
+    }).select('+password');
     if (!user) return res.status(401).json({ success: false, message: 'Invalid credentials' });
     if (user.isBlocked) return res.status(403).json({ success: false, message: 'Account blocked' });
 
