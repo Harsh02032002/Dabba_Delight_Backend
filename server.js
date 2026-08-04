@@ -265,8 +265,48 @@ app.set('io', io);
 // ─── Middleware ──────────────────────────────────────
 // Enable compression for CORS preflight
 app.use(cors({ 
-  origin: ['http://localhost:8081', 'http://localhost:8082', 'http://localhost:8080', 'http://localhost:5173', 'http://13.62.196.51'], 
-  credentials: true 
+  origin: [
+    "http://localhost:8081", 
+    "http://localhost:8082", 
+    "http://localhost:8080", 
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://13.62.196.51",
+    "http://56.228.4.127",
+    "https://dabbanation.in",
+    "https://www.dabbanation.in",
+    "exp://localhost:19000",
+    "exp://localhost:19001",
+    "exp://localhost:19002",
+    "http://localhost:19006",
+    "http://localhost:19007",
+  ], 
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+}));
+
+// Handle preflight requests explicitly
+app.options("*", cors({
+  origin: [
+    "http://localhost:8081",
+    "http://localhost:8082",
+    "http://localhost:8080",
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://13.62.196.51",
+    "http://56.228.4.127",
+    "https://dabbanation.in",
+    "https://www.dabbanation.in",
+    "exp://localhost:19000",
+    "exp://localhost:19001",
+    "exp://localhost:19002",
+    "http://localhost:19006",
+    "http://localhost:19007",
+  ],
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
 }));
 
 // ─── PUBLIC ROUTES (Must be before other routes) ─────
