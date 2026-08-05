@@ -278,6 +278,7 @@ exports.getProfile = async (req, res) => {
       success: true,
       _id: user._id, name: user.name, email: user.email, role: user.role,
       phone: user.phone, avatar: user.avatar, banner: user.banner, wallet: user.wallet,
+      bio: user.bio || '', address: user.address || '',
       referralCode: user.referralCode, isVerified: user.isVerified,
     });
   } catch (err) {
@@ -288,12 +289,17 @@ exports.getProfile = async (req, res) => {
 // PUT /api/auth/profile
 exports.updateProfile = async (req, res) => {
   try {
-    const allowed = ['name', 'phone', 'avatar', 'banner'];
+    const allowed = ['name', 'phone', 'avatar', 'banner', 'bio', 'address'];
     const updates = {};
     allowed.forEach(k => { if (req.body[k] !== undefined) updates[k] = req.body[k]; });
 
     const user = await User.findByIdAndUpdate(req.user._id, updates, { new: true });
-    res.json({ success: true, ...user.toObject() });
+    res.json({ success: true, user: {
+      _id: user._id, name: user.name, email: user.email, role: user.role,
+      phone: user.phone, avatar: user.avatar, banner: user.banner,
+      bio: user.bio || '', address: user.address || '',
+      wallet: user.wallet, referralCode: user.referralCode, isVerified: user.isVerified,
+    }});
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

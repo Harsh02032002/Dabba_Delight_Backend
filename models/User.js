@@ -9,6 +9,8 @@ const userSchema = new mongoose.Schema({
   role: { type: String, enum: ['user', 'seller', 'admin', 'delivery'], default: 'user' },
   avatar: String,
   banner: String,
+  bio: { type: String, trim: true, default: '' },
+  address: { type: String, trim: true, default: '' },
   wallet: { type: Number, default: 0 },
   loyaltyPoints: { type: Number, default: 0 },
   referralCode: { type: String, unique: true, sparse: true },
