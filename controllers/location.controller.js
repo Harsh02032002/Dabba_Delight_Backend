@@ -69,18 +69,57 @@ exports.setDefaultAddress = async (req, res) => {
 // GET /api/user/sellers/nearby
 exports.getNearbySellers = async (req, res) => {
   try {
-    const { lat, lng, radius = 10000, type } = req.query;
+    const { lat, lng, radius = 50000, type, city, locationName } = req.query;
     const filter = { isActive: true };
     if (type) filter.type = type;
+
+    let sellers = [];
     if (lat && lng) {
-      filter['address.location'] = {
-        $near: { $geometry: { type: 'Point', coordinates: [Number(lng), Number(lat)] }, $maxDistance: Number(radius) },
+      const geoFilter = {
+        ...filter,
+        'address.location': {
+          $near: {
+            $geometry: { type: 'Point', coordinates: [Number(lng), Number(lat)] },
+            $maxDistance: Number(radius) || 50000,
+          },
+        },
       };
+      try {
+        sellers = await Seller.find(geoFilter).limit(50).lean();
+      } catch (geoErr) {
+        console.log('[getNearbySellers] $near query info:', geoErr.message);
+      }
     }
-    console.log('[getNearbySellers] filter:', JSON.stringify(filter));
-    const sellers = await Seller.find(filter).limit(50);
-    console.log('[getNearbySellers] found:', sellers.length, sellers.map(s => ({ id: s._id, name: s.businessName, type: s.type, coords: s.address?.location?.coordinates })));
-    res.json({ success: true, sellers });
+
+    // Fallback: If $near returned 0 or if city/location query passed
+    const searchCity = city || locationName;
+    if ((!sellers || sellers.length === 0) && (searchCity || (lat && lng))) {
+      const cityFilter = { ...filter };
+      if (searchCity) {
+        const cityName = String(searchCity).split(',')[0].trim();
+        cityFilter.$or = [
+          { 'address.city': { $regex: cityName, $options: 'i' } },
+          { 'address.state': { $regex: cityName, $options: 'i' } },
+          { 'address.fullAddress': { $regex: cityName, $options: 'i' } },
+          { businessName: { $regex: cityName, $options: 'i' } },
+        ];
+      }
+      sellers = await Seller.find(cityFilter).limit(50).lean();
+    }
+
+    // Default images
+    const DEFAULT_LOGO = 'https://images.unsplash.com/photo-1544025162-d76694265947?w=400&h=400&fit=crop';
+    const DEFAULT_COVER = 'https://images.unsplash.com/photo-1555396273-367ea4eb4db5?w=800&h=400&fit=crop';
+
+    const sellersWithImages = (sellers || []).map(seller => ({
+      ...seller,
+      logo: seller.logo || DEFAULT_LOGO,
+      coverImage: seller.coverImage || DEFAULT_COVER,
+      image: seller.coverImage || DEFAULT_COVER,
+    }));
+
+    console.log('[getNearbySellers] returning:', sellersWithImages.length, 'sellers');
+    res.json({ success: true, sellers: sellersWithImages, total: sellersWithImages.length });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

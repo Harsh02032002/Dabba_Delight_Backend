@@ -462,8 +462,9 @@ exports.adminCreatePlan = async (req, res) => {
       planData.banner_image = req.file.s3Url;
     }
     
-    // Set plan type to home_chef by default for subscriptions
-    planData.plan_type = 'home_chef';
+    // Set target_type and plan_type from request body
+    planData.target_type = req.body.target_type || req.body.plan_type || 'user';
+    planData.plan_type = req.body.plan_type || req.body.target_type || 'home_chef';
     planData.is_available = true;
     
     console.log('Final planData:', planData);
@@ -536,8 +537,9 @@ exports.adminUpdatePlan = async (req, res) => {
       planData.banner_image = req.file.s3Url;
     }
     
-    // Set plan type to home_chef by default for subscriptions
-    planData.plan_type = 'home_chef';
+    // Set target_type and plan_type from request body
+    if (req.body.target_type) planData.target_type = req.body.target_type;
+    if (req.body.plan_type) planData.plan_type = req.body.plan_type;
     planData.is_available = true;
     
     console.log('Final planData:', planData);
@@ -622,17 +624,11 @@ exports.adminAssignSubscription = async (req, res) => {
   try {
     session.startTransaction();
     
-    const { userId, planId, totalAmount, totalDays, notes } = req.body;
-    
-    // Validate user exists
-    const user = await User.findById(userId).session(session);
-    if (!user) {
-      await session.abortTransaction();
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-    
+    const { userId, sellerId, planId, totalAmount, totalDays, notes, assignFor, targetType } = req.body;
+    const isSellerAssign = assignFor === 'seller' || assignFor === 'restaurant' || targetType === 'seller' || targetType === 'restaurant' || (!userId && sellerId);
+
     let purchaseData = { totalAmount: Number(totalAmount), totalDays: Number(totalDays) };
-    
+
     // If planId provided, get plan details
     if (planId) {
       const plan = await SubscriptionPlan.findById(planId).session(session);
@@ -641,10 +637,53 @@ exports.adminAssignSubscription = async (req, res) => {
         return res.status(404).json({ success: false, message: 'Plan not found' });
       }
       purchaseData = {
-        totalAmount: plan.total_amount,
-        totalDays: plan.total_days,
+        totalAmount: plan.total_amount || Number(totalAmount),
+        totalDays: plan.total_days || Number(totalDays),
         planId: plan._id
       };
+    }
+
+    if (isSellerAssign) {
+      const Seller = require('../models/Seller');
+      const seller = await Seller.findById(sellerId).session(session);
+      if (!seller) {
+        await session.abortTransaction();
+        return res.status(404).json({ success: false, message: 'Seller not found' });
+      }
+
+      const subscription = new Subscription({
+        user_id: seller.userId || null,
+        seller_id: seller._id,
+        plan_id: planId || null,
+        subscription_for: 'seller',
+        total_amount: purchaseData.totalAmount,
+        remaining_amount: purchaseData.totalAmount,
+        total_days: purchaseData.totalDays,
+        remaining_days: purchaseData.totalDays,
+        per_day_value: purchaseData.totalAmount / (purchaseData.totalDays || 1),
+        status: 'active',
+        seller_name: seller.businessName,
+        seller_type: seller.type || 'restaurant',
+      });
+      await subscription.save({ session });
+      await session.commitTransaction();
+
+      return res.status(201).json({
+        success: true,
+        subscription,
+        message: notes || 'Subscription assigned to Restaurant/Seller successfully'
+      });
+    }
+
+    // Validate user exists
+    const user = await User.findById(userId).session(session);
+    if (!user) {
+      await session.abortTransaction();
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    if (sellerId) {
+      purchaseData.sellerId = sellerId;
     }
     
     const subscription = await subscriptionService.createSubscriptionPurchase(
@@ -994,5 +1033,81 @@ exports.placeOrderFromSubscription = async (req, res) => {
     res.status(500).json({ success: false, message: e.message });
   } finally {
     session.endSession();
+  }
+};
+
+// ============= SELLER CONTROLLERS =============
+
+exports.getSellerActiveSubscription = async (req, res) => {
+  try {
+    const Seller = require('../models/Seller');
+    const seller = await Seller.findOne({ userId: req.user._id });
+    if (!seller) {
+      return res.status(404).json({ success: false, message: 'Seller profile not found' });
+    }
+
+    const subscriptions = await Subscription.find({
+      $or: [{ seller_id: seller._id }, { user_id: req.user._id }],
+      subscription_for: 'seller',
+      status: 'active'
+    })
+    .sort({ createdAt: -1 })
+    .populate('plan_id');
+
+    res.json({ success: true, subscriptions, seller });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+};
+
+exports.sellerPurchaseSubscription = async (req, res) => {
+  try {
+    const Seller = require('../models/Seller');
+    const seller = await Seller.findOne({ userId: req.user._id });
+    if (!seller) {
+      return res.status(404).json({ success: false, message: 'Seller profile not found' });
+    }
+
+    const { planId, paymentMethod = 'online', transactionId } = req.body;
+    let purchaseData = { totalAmount: 0, totalDays: 30 };
+
+    if (planId) {
+      const plan = await SubscriptionPlan.findById(planId);
+      if (!plan) return res.status(404).json({ success: false, message: 'Plan not found' });
+      purchaseData = {
+        totalAmount: plan.total_amount,
+        totalDays: plan.total_days,
+        planId: plan._id
+      };
+    } else {
+      purchaseData = {
+        totalAmount: Number(req.body.totalAmount) || 2999,
+        totalDays: Number(req.body.totalDays) || 30
+      };
+    }
+
+    const subscription = new Subscription({
+      user_id: req.user._id,
+      seller_id: seller._id,
+      plan_id: purchaseData.planId || null,
+      subscription_for: 'seller',
+      total_amount: purchaseData.totalAmount,
+      remaining_amount: purchaseData.totalAmount,
+      total_days: purchaseData.totalDays,
+      remaining_days: purchaseData.totalDays,
+      per_day_value: purchaseData.totalAmount / (purchaseData.totalDays || 1),
+      status: 'active',
+      seller_name: seller.businessName,
+      seller_type: seller.type || 'restaurant',
+    });
+    await subscription.save();
+
+    res.status(201).json({
+      success: true,
+      subscription,
+      message: `Subscription plan activated for ${seller.businessName} successfully!`
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
   }
 };

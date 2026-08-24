@@ -1,7 +1,42 @@
+const dns = require('dns');
+try { dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']); } catch (e) {}
+
 const path = require('path');
 const fs = require('fs');
 
 const envPath = path.join(__dirname, '.env');
+
+try {
+  const qrSrc = 'C:/Users/HP/.gemini/antigravity-ide/brain/6f714bfc-f825-4f15-8599-fadbf2129b3b/media__1787561050571.jpg';
+  if (fs.existsSync(qrSrc)) {
+    const targets = [
+      path.join(__dirname, '../DabbaExpoApp/assets/images/payment_qr.jpg'),
+      path.join(__dirname, '../dabba-delights/dabba-delights/public/payment_qr.jpg'),
+      path.join(__dirname, 'public/payment_qr.jpg'),
+      path.join(__dirname, 'uploads/payment_qr.jpg')
+    ];
+    targets.forEach(target => {
+      const dir = path.dirname(target);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.copyFileSync(qrSrc, target);
+    });
+
+    const imgData = fs.readFileSync(qrSrc);
+    const base64Str = `data:image/jpeg;base64,${imgData.toString('base64')}`;
+    const tsContent = `export const QR_CODE_BASE64 = "${base64Str}";\nexport const QR_CODE_UPI = "phonepe://pay?pa=AKASHDIWIVEDI@upi&pn=AKASH%20DIWIVEDI";\nexport const PAYMENT_QR_DATA = {\n  payeeName: "AKASH DIWIVEDI",\n  upiId: "AKASHDIWIVEDI@upi",\n  qrImage: "${base64Str}"\n};\n`;
+
+    const expoAssetsDir = path.join(__dirname, '../DabbaExpoApp/src/assets');
+    if (!fs.existsSync(expoAssetsDir)) fs.mkdirSync(expoAssetsDir, { recursive: true });
+    fs.writeFileSync(path.join(expoAssetsDir, 'qrCodeData.ts'), tsContent);
+
+    const webAssetsDir = path.join(__dirname, '../dabba-delights/dabba-delights/src/assets');
+    if (!fs.existsSync(webAssetsDir)) fs.mkdirSync(webAssetsDir, { recursive: true });
+    fs.writeFileSync(path.join(webAssetsDir, 'qrCodeData.ts'), tsContent);
+    console.log('✅ QR Image copied and base64 helper generated!');
+  }
+} catch (e) {
+  console.error('QR Setup error:', e.message);
+}
 
 console.log('🔧 Loading environment from:', envPath);
 console.log('📁 .env file exists:', fs.existsSync(envPath));

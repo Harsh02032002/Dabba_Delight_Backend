@@ -96,7 +96,7 @@ exports.getSellers = async (req, res) => {
     if (req.query.search) filter.businessName = { $regex: req.query.search, $options: 'i' };
     // Select only required fields for faster response
     const sellers = await Seller.find(filter)
-      .select('_id businessName type logo coverImage rating totalOrders totalRevenue cuisines address.city address.state isActive isVerified description')
+      .select('_id businessName type logo coverImage rating totalOrders totalRevenue cuisines address isActive isVerified description')
       .sort({ rating: -1 })
       .lean(); // Use lean() for faster queries
 
@@ -115,7 +115,7 @@ exports.getSellers = async (req, res) => {
 exports.getMenuItems = async (req, res) => {
   try {
     // Build product filter
-    const filter = { isAvailable: true, status: 'published', isAdminApproved: true };
+    const filter = { isAvailable: true, isDeleted: { $ne: true } };
     
     // If sellerIds passed directly (from frontend nearby sellers), use them
     if (req.query.sellerIds) {

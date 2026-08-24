@@ -32,6 +32,10 @@ router.get('/my-items', auth, subscriptionController.getMySubscriptionItems);
 // Place order directly from subscription items
 router.post('/place-order', auth, subscriptionController.placeOrderFromSubscription);
 
+// ============= SELLER ROUTES =============
+router.get('/seller/active', auth, subscriptionController.getSellerActiveSubscription);
+router.post('/seller/purchase', auth, subscriptionController.sellerPurchaseSubscription);
+
 // ============= ADMIN ROUTES =============
 
 // Debug middleware for form-data

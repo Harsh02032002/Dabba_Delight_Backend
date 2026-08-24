@@ -33,8 +33,9 @@ const subscriptionPlanSchema = new mongoose.Schema(
       }
     ],
 
-    // Plan type - only home_chef for subscriptions
-    plan_type: { type: String, default: 'home_chef', enum: ['home_chef'] },
+    // Plan type and target
+    plan_type: { type: String, default: 'home_chef', enum: ['home_chef', 'restaurant', 'seller', 'user', 'cloud_kitchen'] },
+    target_type: { type: String, default: 'user', enum: ['user', 'home_chef', 'restaurant', 'seller', 'cloud_kitchen'] },
     
     // Plan settings
     is_active: { type: Boolean, default: true, index: true },

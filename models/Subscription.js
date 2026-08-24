@@ -2,9 +2,10 @@ const mongoose = require('mongoose');
 
 const subscriptionSchema = new mongoose.Schema(
   {
-    user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    seller_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Seller' }, // Seller/restaurant this subscription is for
+    user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: false, index: true },
+    seller_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Seller', index: true }, // Seller/restaurant this subscription is for
     plan_id: { type: mongoose.Schema.Types.ObjectId, ref: 'SubscriptionPlan', default: null },
+    subscription_for: { type: String, enum: ['user', 'seller', 'restaurant'], default: 'user', index: true },
     total_amount: { type: Number, required: true, min: 0 },
     remaining_amount: { type: Number, required: true, min: 0 },
     total_days: { type: Number, required: true, min: 1 },
@@ -12,7 +13,7 @@ const subscriptionSchema = new mongoose.Schema(
     per_day_value: { type: Number, required: true, min: 0 },
     status: { type: String, enum: ['active', 'expired'], default: 'active', index: true },
     seller_name: { type: String }, // Denormalized seller name for quick display
-    seller_type: { type: String, enum: ['home_chef', 'restaurant', 'cloud_kitchen'] },
+    seller_type: { type: String, enum: ['home_chef', 'restaurant', 'cloud_kitchen', 'catering'] },
   },
   { timestamps: true, collection: 'subscriptions' },
 );

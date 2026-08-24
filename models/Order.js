@@ -55,7 +55,7 @@ const orderSchema = new mongoose.Schema({
   payableAfterSubscription: { type: Number, default: 0 },
   discount: { type: Number, default: 0 },
   total: Number,
-  paymentMethod: { type: String, enum: ['razorpay', 'cod', 'wallet', 'stripe', 'subscription'] },
+  paymentMethod: { type: String, enum: ['razorpay', 'cod', 'wallet', 'stripe', 'subscription', 'online', 'online_qr', 'upi'] },
   paymentStatus: { type: String, enum: ['pending', 'paid', 'failed', 'refunded'], default: 'pending' },
   paymentId: String,
   specialInstructions: String,
