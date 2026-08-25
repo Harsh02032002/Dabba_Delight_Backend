@@ -462,8 +462,13 @@ exports.adminCreatePlan = async (req, res) => {
       planData.banner_image = req.file.s3Url;
     }
     
+    // Handle seller created plan
+    if (req.user && (req.user.role === 'seller' || req.user.sellerId)) {
+      planData.assigned_seller_id = req.user.sellerId || req.user._id;
+    }
+
     // Set target_type and plan_type from request body
-    planData.target_type = req.body.target_type || req.body.plan_type || 'user';
+    planData.target_type = req.body.target_type || req.body.plan_type || 'home_chef';
     planData.plan_type = req.body.plan_type || req.body.target_type || 'home_chef';
     planData.is_available = true;
     
