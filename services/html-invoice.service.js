@@ -51,6 +51,32 @@ const generateInvoiceNumber = async () => {
 const prepareOrderData = (order, invoiceNumber) => {
   const backendUrl = process.env.BACKEND_URL || (process.env.NODE_ENV === 'production' ? 'https://api.dabbanation.in' : 'http://localhost:5000');
   
+  const rawGst = order.sellerId?.gstNumber;
+  const rawFssai = order.sellerId?.fssaiLicense;
+
+  const gstVal = rawGst && rawGst !== 'N/A' && rawGst !== '0' && rawGst !== 'undefined' ? rawGst : null;
+  const fssaiVal = rawFssai && rawFssai !== 'N/A' && rawFssai !== '0' && rawFssai !== 'undefined' ? rawFssai : null;
+
+  const subtotal = Number(order.subtotal) || 0;
+  const discount = Number(order.discount) || 0;
+
+  // Dynamic Delivery fee: use order.deliveryFee if > 0, else default to 30
+  let deliveryFee = Number(order.deliveryFee);
+  if (!Number.isFinite(deliveryFee) || deliveryFee <= 0) {
+    deliveryFee = 30;
+  }
+
+  // Tax (GST): use order.gstAmount or calculate 5% GST on subtotal if 0
+  let taxAmount = Number(order.gstAmount) || 
+    ((Number(order.foodCgst) || 0) + (Number(order.foodSgst) || 0) + (Number(order.foodIgst) || 0) + (Number(order.deliveryCgst) || 0) + (Number(order.deliverySgst) || 0) + (Number(order.deliveryIgst) || 0));
+
+  if (!taxAmount || taxAmount <= 0) {
+    taxAmount = Math.round(subtotal * 0.05); // 5% GST
+  }
+
+  const platformFee = Number(order.platformFee) || 0;
+  const total = subtotal + deliveryFee + taxAmount + platformFee - discount;
+
   return {
     invoiceNumber,
     date: new Date(order.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }),
@@ -62,8 +88,8 @@ const prepareOrderData = (order, invoiceNumber) => {
     seller: {
       name: order.sellerId?.businessName || 'Restaurant',
       type: order.sellerId?.type === 'home_chef' ? 'Home Chef' : 'Restaurant',
-      gst: order.sellerId?.gstNumber && order.sellerId.gstNumber !== 'N/A' ? order.sellerId.gstNumber : '0',
-      fssai: order.sellerId?.fssaiLicense && order.sellerId.fssaiLicense !== 'N/A' ? order.sellerId.fssaiLicense : '0',
+      gst: gstVal,
+      fssai: fssaiVal,
       address: order.sellerId?.address?.fullAddress || `${order.sellerId?.address?.street || ''}, ${order.sellerId?.address?.city || ''}`.trim() || 'N/A',
       logo: order.sellerId?.logo ? (order.sellerId.logo.startsWith('http') ? order.sellerId.logo : `${backendUrl}${order.sellerId.logo.startsWith('/') ? '' : '/'}${order.sellerId.logo}`) : 'https://cdn-icons-png.flaticon.com/512/1046/1046771.png'
     },
@@ -74,12 +100,12 @@ const prepareOrderData = (order, invoiceNumber) => {
       total: (Number(item.sellingPrice || item.price) || 0) * (Number(item.quantity) || 0)
     })).filter(i => i.quantity > 0),
     summary: {
-      subtotal: Number(order.subtotal) || 0,
-      discount: Number(order.discount) || 0,
-      delivery: Number(order.deliveryFee) || 0,
-      tax: (Number(order.foodCgst) || 0) + (Number(order.foodSgst) || 0) + (Number(order.foodIgst) || 0) + (Number(order.deliveryCgst) || 0) + (Number(order.deliverySgst) || 0) + (Number(order.deliveryIgst) || 0),
-      platform: Number(order.platformFee) || 0,
-      total: Number(order.total) || 0,
+      subtotal,
+      discount,
+      delivery: deliveryFee,
+      tax: taxAmount,
+      platform: platformFee,
+      total,
       status: (order.paymentStatus || 'pending').toUpperCase()
     }
   };
@@ -151,8 +177,8 @@ const getInvoiceHTML = (data) => {
                         <div style="font-size: 10px; color: #888; text-transform: uppercase;">${data.seller.type}</div>
                     </div>
                 </div>
-                <div class="info-group"><span class="label">GST</span><span class="value">${data.seller.gst}</span></div>
-                <div class="info-group"><span class="label">FSSAI</span><span class="value">${data.seller.fssai}</span></div>
+                ${data.seller.gst ? `<div class="info-group"><span class="label">GST</span><span class="value">${data.seller.gst}</span></div>` : ''}
+                ${data.seller.fssai ? `<div class="info-group"><span class="label">FSSAI</span><span class="value">${data.seller.fssai}</span></div>` : ''}
                 <div class="info-group"><span class="label">Address</span><span class="value">${data.seller.address}</span></div>
             </div>
         </div>
@@ -285,12 +311,20 @@ exports.generateInvoice = async (order) => {
     y += 20;
     doc.fillColor(COLORS.lightText).font('Helvetica').fontSize(9);
     doc.text(`Phone: ${data.customer.phone}`, 50, y);
-    doc.text(`GST: ${data.seller.gst}`, 320, y);
     
+    let sellerY = y;
+    if (data.seller.gst) {
+      doc.text(`GST: ${data.seller.gst}`, 320, sellerY);
+      sellerY += 15;
+    }
+    if (data.seller.fssai) {
+      doc.text(`FSSAI: ${data.seller.fssai}`, 320, sellerY);
+      sellerY += 15;
+    }
+    doc.text(data.seller.address, 320, sellerY, { width: 220 });
+
     y += 15;
     doc.text(data.customer.address, 50, y, { width: 220 });
-    doc.text(`FSSAI: ${data.seller.fssai}`, 320, y);
-    doc.text(data.seller.address, 320, y + 15, { width: 220 });
 
     // Table
     y = 300;
