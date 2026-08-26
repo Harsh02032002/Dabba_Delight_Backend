@@ -120,11 +120,34 @@ exports.placeOrder = async (req, res) => {
         );
       }
 
+      let sanitizedAddress = deliveryAddress ? { ...deliveryAddress } : {};
+      if (sanitizedAddress.location) {
+        const loc = sanitizedAddress.location;
+        const coords = loc.coordinates;
+        if (
+          Array.isArray(coords) &&
+          coords.length === 2 &&
+          coords[0] !== null &&
+          coords[0] !== undefined &&
+          coords[1] !== null &&
+          coords[1] !== undefined &&
+          !isNaN(Number(coords[0])) &&
+          !isNaN(Number(coords[1]))
+        ) {
+          sanitizedAddress.location = {
+            type: 'Point',
+            coordinates: [Number(coords[0]), Number(coords[1])],
+          };
+        } else {
+          delete sanitizedAddress.location;
+        }
+      }
+
       order = new Order({
         userId: req.user._id,
         sellerId,
         items,
-        deliveryAddress,
+        deliveryAddress: sanitizedAddress,
         paymentMethod,
         paymentStatus: paymentMethod === 'cod' ? 'pending' : 'paid',
         subtotal: numSubtotal,

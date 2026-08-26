@@ -27,7 +27,7 @@ const orderSchema = new mongoose.Schema({
     pincode: String,
     fullAddress: String,
     location: {
-      type: { type: String, default: 'Point' },
+      type: { type: String, enum: ['Point'] },
       coordinates: [Number],
     },
   },
@@ -75,8 +75,54 @@ const orderSchema = new mongoose.Schema({
   }],
 }, { timestamps: true });
 
-// Auto-generate order number
+// Sanitize deliveryAddress.location before validation and saving
+const sanitizeOrderGeoLocation = function (doc) {
+  if (doc.deliveryAddress) {
+    const loc = doc.deliveryAddress.location;
+    if (loc) {
+      const coords = loc.coordinates;
+      let validLng = null;
+      let validLat = null;
+
+      if (
+        Array.isArray(coords) &&
+        coords.length === 2 &&
+        coords[0] !== null &&
+        coords[0] !== undefined &&
+        coords[1] !== null &&
+        coords[1] !== undefined &&
+        !isNaN(Number(coords[0])) &&
+        !isNaN(Number(coords[1]))
+      ) {
+        validLng = Number(coords[0]);
+        validLat = Number(coords[1]);
+      } else if (loc.lat != null && loc.lng != null && !isNaN(Number(loc.lat)) && !isNaN(Number(loc.lng))) {
+        validLng = Number(loc.lng);
+        validLat = Number(loc.lat);
+      } else if (loc.latitude != null && loc.longitude != null && !isNaN(Number(loc.latitude)) && !isNaN(Number(loc.longitude))) {
+        validLng = Number(loc.longitude);
+        validLat = Number(loc.latitude);
+      }
+
+      if (validLng !== null && validLat !== null) {
+        doc.deliveryAddress.location = {
+          type: 'Point',
+          coordinates: [validLng, validLat],
+        };
+      } else {
+        doc.deliveryAddress.location = undefined;
+      }
+    }
+  }
+};
+
+orderSchema.pre('validate', function () {
+  sanitizeOrderGeoLocation(this);
+});
+
+// Auto-generate order number & sanitize geo location
 orderSchema.pre('save', async function () {
+  sanitizeOrderGeoLocation(this);
   if (!this.orderNumber) {
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, '');
     const count = await mongoose.model('Order').countDocuments();

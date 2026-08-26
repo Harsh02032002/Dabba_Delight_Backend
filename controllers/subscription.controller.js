@@ -955,6 +955,30 @@ exports.placeOrderFromSubscription = async (req, res) => {
     const perDayValue = subscription.per_day_value || (subscription.total_amount / subscription.total_days);
     const daysToDeduct = Math.ceil(orderTotal / perDayValue);
     
+    // Sanitize delivery address location
+    let sanitizedAddress = deliveryAddress ? { ...deliveryAddress } : {};
+    if (sanitizedAddress.location) {
+      const loc = sanitizedAddress.location;
+      const coords = loc.coordinates;
+      if (
+        Array.isArray(coords) &&
+        coords.length === 2 &&
+        coords[0] !== null &&
+        coords[0] !== undefined &&
+        coords[1] !== null &&
+        coords[1] !== undefined &&
+        !isNaN(Number(coords[0])) &&
+        !isNaN(Number(coords[1]))
+      ) {
+        sanitizedAddress.location = {
+          type: 'Point',
+          coordinates: [Number(coords[0]), Number(coords[1])],
+        };
+      } else {
+        delete sanitizedAddress.location;
+      }
+    }
+
     // Create order
     const order = new Order({
       userId: req.user._id,
@@ -966,7 +990,7 @@ exports.placeOrderFromSubscription = async (req, res) => {
         quantity: item.quantity,
         image: item.image
       })),
-      deliveryAddress,
+      deliveryAddress: sanitizedAddress,
       paymentMethod: 'subscription',
       totalAmount: orderTotal,
       subtotal: orderTotal,
