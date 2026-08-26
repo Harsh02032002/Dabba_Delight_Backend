@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const puppeteer = require('puppeteer');
-const { Invoice } = require('../models/Others');
+const { Invoice, PlatformConfig } = require('../models/Others');
 const { uploadToS3 } = require('../middleware/s3-upload.middleware');
 
 // ─── CONFIGURATION ──────────────────────────────────
@@ -48,7 +48,7 @@ const generateInvoiceNumber = async () => {
   return `DN-INV-${dateStr}-${String(count + 1).padStart(4, '0')}-${random}`;
 };
 
-const prepareOrderData = (order, invoiceNumber) => {
+const prepareOrderData = async (order, invoiceNumber) => {
   const backendUrl = process.env.BACKEND_URL || (process.env.NODE_ENV === 'production' ? 'https://api.dabbanation.in' : 'http://localhost:5000');
   
   const rawGst = order.sellerId?.gstNumber;
@@ -60,19 +60,22 @@ const prepareOrderData = (order, invoiceNumber) => {
   const subtotal = Number(order.subtotal) || 0;
   const discount = Number(order.discount) || 0;
 
-  // Dynamic Delivery fee: use order.deliveryFee if > 0, else default to 30
+  // Dynamic Delivery fee from order or Admin PlatformConfig database
   let deliveryFee = Number(order.deliveryFee);
-  if (!Number.isFinite(deliveryFee) || deliveryFee <= 0) {
-    deliveryFee = 30;
+  if (!Number.isFinite(deliveryFee)) {
+    try {
+      const platformDoc = await PlatformConfig.findOne();
+      deliveryFee = platformDoc && platformDoc.deliveryFee != null ? Number(platformDoc.deliveryFee) : 0;
+    } catch (e) {
+      deliveryFee = 0;
+    }
   }
 
-  // Tax (GST): use order.gstAmount or calculate 5% GST on subtotal if 0
+  // Tax (GST): use order.gstAmount or calculate from food CGST/SGST/IGST
   let taxAmount = Number(order.gstAmount) || 
     ((Number(order.foodCgst) || 0) + (Number(order.foodSgst) || 0) + (Number(order.foodIgst) || 0) + (Number(order.deliveryCgst) || 0) + (Number(order.deliverySgst) || 0) + (Number(order.deliveryIgst) || 0));
 
-  if (!taxAmount || taxAmount <= 0) {
-    taxAmount = Math.round(subtotal * 0.05); // 5% GST
-  }
+  if (!Number.isFinite(taxAmount)) taxAmount = 0;
 
   const platformFee = Number(order.platformFee) || 0;
   const total = subtotal + deliveryFee + taxAmount + platformFee - discount;
@@ -237,7 +240,7 @@ const getInvoiceHTML = (data) => {
 // ─── GENERATE INVOICE ───────────────────────────────
 exports.generateInvoice = async (order) => {
   const invoiceNumber = await generateInvoiceNumber();
-  const data = prepareOrderData(order, invoiceNumber);
+  const data = await prepareOrderData(order, invoiceNumber);
   
   const invoice = new Invoice({
     invoiceNumber,
