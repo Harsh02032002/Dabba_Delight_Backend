@@ -2,6 +2,7 @@ const { Invoice } = require('../models/Others');
 const Order = require('../models/Order');
 const { generateInvoice } = require('../services/html-invoice.service'); // Use HTML service
 const fs = require('fs');
+const path = require('path');
 
 // POST /api/invoice/generate/:orderId
 exports.generateInvoiceForOrder = async (req, res) => {
