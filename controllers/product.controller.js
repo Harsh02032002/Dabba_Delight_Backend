@@ -16,12 +16,29 @@ exports.getProducts = async (req, res) => {
     if (isVeg === 'true') filter.isVeg = true;
     if (isAvailable !== undefined) filter.isAvailable = isAvailable === 'true';
     if (sellerId) filter.sellerId = sellerId;
+    if (req.query.sellerIds) {
+      const ids = String(req.query.sellerIds).split(',').map(s => s.trim()).filter(Boolean);
+      if (ids.length > 0) {
+        filter.sellerId = { $in: ids };
+      }
+    }
+    if (req.query.type) {
+      const typeVal = req.query.type;
+      const typeQuery = (typeVal === 'home_chef' || typeVal === 'home-chef') ? { $in: ['home_chef', 'home-chef'] } : typeVal;
+      const matchingSellers = await Seller.find({ type: typeQuery }).select('_id');
+      const sellerIdList = matchingSellers.map(s => s._id);
+      if (filter.sellerId && filter.sellerId.$in) {
+        filter.sellerId.$in = filter.sellerId.$in.filter(id => sellerIdList.some(sid => sid.toString() === id.toString()));
+      } else {
+        filter.sellerId = { $in: sellerIdList };
+      }
+    }
     if (req.query.pendingApproval === 'true') filter.isAdminApproved = false;
     if (req.query.approvedOnly === 'true') filter.isAdminApproved = true;
     filter.status = { $ne: 'archived' };
 
     const products = await Product.find(filter)
-      .populate('sellerId', 'businessName type logo rating')
+      .populate('sellerId', 'businessName type logo rating address')
       .sort(sort).limit(Number(limit)).skip((Number(page) - 1) * Number(limit));
     const total = await Product.countDocuments(filter);
     res.json({ success: true, products, total, page: Number(page), limit: Number(limit) });

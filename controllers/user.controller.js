@@ -119,13 +119,17 @@ exports.getMenuItems = async (req, res) => {
     
     // If sellerIds passed directly (from frontend nearby sellers), use them
     if (req.query.sellerIds) {
-      const ids = req.query.sellerIds.split(',').filter(Boolean);
+      const ids = req.query.sellerIds.split(',').map(s => s.trim()).filter(Boolean);
       filter.sellerId = { $in: ids };
     } else if (req.query.sellerId) {
       filter.sellerId = req.query.sellerId;
     } else if (req.query.type) {
-      // Filter by seller type
-      const typeSellers = await Seller.find({ isActive: true, type: req.query.type }).select('_id').lean();
+      // Filter by seller type (support both home_chef and home-chef)
+      const typeVal = req.query.type;
+      const typeQuery = (typeVal === 'home_chef' || typeVal === 'home-chef') 
+        ? { $in: ['home_chef', 'home-chef'] } 
+        : typeVal;
+      const typeSellers = await Seller.find({ isActive: true, type: typeQuery }).select('_id').lean();
       filter.sellerId = { $in: typeSellers.map(s => s._id) };
     }
     

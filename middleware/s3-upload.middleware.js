@@ -99,10 +99,11 @@ async function deleteFromCloudinary(fileUrl) {
 // ─── Middleware: Upload single file to Cloudinary ─
 function s3Upload(fieldName = 'image', folder = 'products') {
   return [
-    upload.single(fieldName),
+    upload.any(),
     async (req, res, next) => {
       try {
-        if (req.file) {
+        if (req.files && req.files.length > 0) {
+          req.file = req.files[0];
           req.file.s3Url = await uploadToCloudinary(req.file, folder);
         }
         next();
@@ -116,7 +117,7 @@ function s3Upload(fieldName = 'image', folder = 'products') {
 // ─── Middleware: Upload multiple files to Cloudinary ─
 function s3UploadMultiple(fieldName = 'images', maxCount = 5, folder = 'products') {
   return [
-    upload.array(fieldName, maxCount),
+    upload.any(),
     async (req, res, next) => {
       try {
         if (req.files && req.files.length > 0) {
@@ -125,6 +126,7 @@ function s3UploadMultiple(fieldName = 'images', maxCount = 5, folder = 'products
           );
           req.files.forEach((file, i) => { file.s3Url = urls[i]; });
           req.s3Urls = urls;
+          req.file = req.files[0];
         }
         next();
       } catch (err) {
