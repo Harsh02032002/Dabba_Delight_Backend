@@ -4,12 +4,45 @@ const adminAuth = require('../middleware/admin.middleware');
 const { s3Upload } = require('../middleware/s3-upload.middleware');
 const pc = require('../controllers/product.controller');
 
-// Helper middleware to allow both seller and admin
-const sellerOrAdminAuth = (req, res, next) => {
-  sellerAuth(req, res, (err) => {
-    if (!err && req.seller) return next();
-    adminAuth(req, res, next);
-  });
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+const Seller = require('../models/Seller');
+
+// Helper middleware to allow both seller and admin seamlessly
+const sellerOrAdminAuth = async (req, res, next) => {
+  try {
+    const token = req.header('Authorization')?.replace('Bearer ', '');
+    if (!token) return res.status(401).json({ message: 'No token provided' });
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id);
+    if (!user) return res.status(401).json({ message: 'User not found' });
+
+    req.user = user;
+
+    if (user.role === 'admin') {
+      req.admin = user;
+      return next();
+    }
+
+    if (user.role === 'seller') {
+      let seller = await Seller.findOne({ userId: user._id });
+      if (!seller) {
+        seller = await Seller.create({
+          userId: user._id,
+          businessName: user.businessName || user.name || 'New Seller',
+          phone: user.phone || '',
+          email: user.email,
+        });
+      }
+      req.seller = seller;
+      return next();
+    }
+
+    return res.status(403).json({ message: 'Access denied. Neither seller nor admin.' });
+  } catch (err) {
+    return res.status(401).json({ message: 'Invalid authentication token' });
+  }
 };
 
 // CRUD
