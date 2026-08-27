@@ -1,20 +1,23 @@
-const { S3Client, PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const multer = require('multer');
 const path = require('path');
 const crypto = require('crypto');
+const { Readable } = require('stream');
 
-// ─── S3 Client ──────────────────────────────────
-const s3 = new S3Client({
-  region: process.env.AWS_REGION || 'ap-south-1',
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  },
-});
+// ─── Cloudinary Setup ───────────────────────────
+// Run: npm install cloudinary
+let cloudinary;
+try {
+  cloudinary = require('cloudinary').v2;
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'placeholder_cloud_name',
+    api_key: process.env.CLOUDINARY_API_KEY || 'placeholder_api_key',
+    api_secret: process.env.CLOUDINARY_API_SECRET || 'placeholder_api_secret',
+  });
+} catch (e) {
+  console.warn('⚠️ Cloudinary package not installed. Run: npm install cloudinary');
+}
 
-const BUCKET = process.env.AWS_S3_BUCKET || 'dabba-nation-uploads';
-
-// ─── Multer memory storage (for S3 pipe) ────────
+// ─── Multer memory storage (buffers file before upload) ─
 const memoryStorage = multer.memoryStorage();
 
 const fileFilter = (req, file, cb) => {
@@ -31,48 +34,76 @@ const upload = multer({
   limits: { fileSize: parseInt(process.env.MAX_FILE_SIZE) || 5 * 1024 * 1024 },
 });
 
-// ─── S3 Upload Helper ───────────────────────────
+// ─── Cloudinary Upload Helper ───────────────────
 async function uploadToS3(file, folder = 'products') {
-  const uniqueName = `${folder}/${Date.now()}-${crypto.randomBytes(8).toString('hex')}${path.extname(file.originalname)}`;
-  
-  const command = new PutObjectCommand({
-    Bucket: BUCKET,
-    Key: uniqueName,
-    Body: file.buffer,
-    ContentType: file.mimetype,
-  });
-
-  await s3.send(command);
-  
-  // Return the public URL
-  return `https://${BUCKET}.s3.${process.env.AWS_REGION || 'ap-south-1'}.amazonaws.com/${uniqueName}`;
+  return uploadToCloudinary(file, folder);
 }
 
-// ─── S3 Delete Helper ───────────────────────────
-async function deleteFromS3(fileUrl) {
-  try {
-    if (!fileUrl || !fileUrl.includes('.amazonaws.com/')) return;
-    const key = fileUrl.split('.amazonaws.com/')[1];
-    if (!key) return;
+async function uploadToCloudinary(file, folder = 'products') {
+  if (!cloudinary) throw new Error('Cloudinary not installed. Run: npm install cloudinary');
 
-    const command = new DeleteObjectCommand({
-      Bucket: BUCKET,
-      Key: key,
-    });
-    await s3.send(command);
+  return new Promise((resolve, reject) => {
+    const uniqueId = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
+    const publicId = `${folder}/${uniqueId}`;
+
+    const isPdf = file.mimetype === 'application/pdf' || path.extname(file.originalname).toLowerCase() === '.pdf';
+
+    const uploadStream = cloudinary.uploader.upload_stream(
+      {
+        folder,
+        public_id: uniqueId,
+        resource_type: isPdf ? 'raw' : 'image',
+        ...(isPdf ? {} : { transformation: [{ quality: 'auto', fetch_format: 'auto' }] }),
+      },
+      (error, result) => {
+        if (error) return reject(error);
+        resolve(result.secure_url);
+      }
+    );
+
+    const readable = new Readable();
+    readable.push(file.buffer);
+    readable.push(null);
+    readable.pipe(uploadStream);
+  });
+}
+
+// ─── Cloudinary Delete Helper ───────────────────
+async function deleteFromS3(fileUrl) {
+  return deleteFromCloudinary(fileUrl);
+}
+
+async function deleteFromCloudinary(fileUrl) {
+  try {
+    if (!cloudinary) return;
+    if (!fileUrl || !fileUrl.includes('cloudinary.com')) return;
+
+    // Extract public_id from Cloudinary URL
+    const parts = fileUrl.split('/');
+    const uploadIndex = parts.indexOf('upload');
+    if (uploadIndex === -1) return;
+
+    // Skip version segment (v1234567890)
+    let startIdx = uploadIndex + 1;
+    if (parts[startIdx] && parts[startIdx].startsWith('v')) startIdx++;
+
+    const publicIdWithExt = parts.slice(startIdx).join('/');
+    const publicId = publicIdWithExt.replace(/\.[^.]+$/, ''); // remove extension
+
+    await cloudinary.uploader.destroy(publicId);
   } catch (err) {
-    console.error('S3 delete error:', err.message);
+    console.error('Cloudinary delete error:', err.message);
   }
 }
 
-// ─── Middleware: Upload single file to S3 ───────
+// ─── Middleware: Upload single file to Cloudinary ─
 function s3Upload(fieldName = 'image', folder = 'products') {
   return [
     upload.single(fieldName),
     async (req, res, next) => {
       try {
         if (req.file) {
-          req.file.s3Url = await uploadToS3(req.file, folder);
+          req.file.s3Url = await uploadToCloudinary(req.file, folder);
         }
         next();
       } catch (err) {
@@ -82,7 +113,7 @@ function s3Upload(fieldName = 'image', folder = 'products') {
   ];
 }
 
-// ─── Middleware: Upload multiple files to S3 ────
+// ─── Middleware: Upload multiple files to Cloudinary ─
 function s3UploadMultiple(fieldName = 'images', maxCount = 5, folder = 'products') {
   return [
     upload.array(fieldName, maxCount),
@@ -90,7 +121,7 @@ function s3UploadMultiple(fieldName = 'images', maxCount = 5, folder = 'products
       try {
         if (req.files && req.files.length > 0) {
           const urls = await Promise.all(
-            req.files.map(file => uploadToS3(file, folder))
+            req.files.map(file => uploadToCloudinary(file, folder))
           );
           req.files.forEach((file, i) => { file.s3Url = urls[i]; });
           req.s3Urls = urls;
@@ -103,4 +134,4 @@ function s3UploadMultiple(fieldName = 'images', maxCount = 5, folder = 'products
   ];
 }
 
-module.exports = { upload, uploadToS3, deleteFromS3, s3Upload, s3UploadMultiple };
+module.exports = { upload, uploadToS3, uploadToCloudinary, deleteFromS3, deleteFromCloudinary, s3Upload, s3UploadMultiple };
