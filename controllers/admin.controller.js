@@ -171,9 +171,12 @@ exports.getSellers = async (req, res) => {
   try {
     const filter = {};
     if (req.query.status) {
-      if (req.query.status === 'active') filter.isActive = true;
+      if (req.query.status === 'verified') filter.kycStatus = 'verified';
+      else if (req.query.status === 'active') filter.isActive = true;
       else if (req.query.status === 'inactive') filter.isActive = false;
       else if (req.query.status === 'pending') filter.kycStatus = 'submitted';
+      else if (req.query.status === 'home_chef') filter.type = { $in: ['home_chef', 'home-chef'] };
+      else if (req.query.status === 'restaurant') filter.type = 'restaurant';
     }
     const sellers = await Seller.find(filter).populate('userId', 'name email phone').sort({ createdAt: -1 });
     res.json({ success: true, sellers });
@@ -182,43 +185,75 @@ exports.getSellers = async (req, res) => {
 
 exports.createSeller = async (req, res) => {
   try {
-    const { name, email, password, phone, businessName, type, address, gstNumber } = req.body;
+    const { 
+      name, email, password, phone, businessName, type, address, 
+      gstNumber, fssaiLicense, panNumber, bankAccount, ifscCode, accountHolder, bankName, commissionRate 
+    } = req.body;
     
     // Check if user already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(400).json({ success: false, message: 'User with this email already exists' });
     }
+
+    // Format address object properly if string passed
+    let parsedAddress = address;
+    if (typeof address === 'string') {
+      parsedAddress = {
+        street: address,
+        city: 'Deoria',
+        state: 'Uttar Pradesh',
+        pincode: '274001',
+        location: { type: 'Point', coordinates: [83.7788, 26.5021] }
+      };
+    }
     
-    // Create user with seller role
+    // Create user with seller role — AUTO VERIFIED!
     const user = await User.create({
       name,
       email,
-      password,
+      password, // Pre-save hook hashes it once
       phone,
       role: 'seller',
       isVerified: true
     });
     
-    // Create seller profile
+    // Create seller profile — AUTO APPROVED & VERIFIED!
     const seller = await Seller.create({
       userId: user._id,
       businessName,
       type: type || 'home_chef',
       email,
       phone,
-      address,
+      address: parsedAddress,
       gstNumber,
+      fssaiLicense,
+      panNumber,
+      bankDetails: bankAccount ? {
+        accountNumber: bankAccount,
+        ifscCode,
+        accountHolder,
+        bankName
+      } : undefined,
+      commissionRate: Number(commissionRate) || 15,
       isActive: true,
       isVerified: true,
-      kycStatus: 'verified'
+      kycStatus: 'verified' // 🌟 Auto-approved, verified!
+    });
+
+    // Create notification for seller
+    await Notification.create({ 
+      userId: user._id, 
+      type: 'kyc', 
+      title: '🎉 Welcome to Dabba Nation!', 
+      message: 'Your seller account has been created and pre-approved by Admin. You can start adding menu items right away!' 
     });
     
-    await logAction(req, 'seller_created', 'Seller', seller._id, { businessName, email });
+    await logAction(req, 'seller_created_auto_approved', 'Seller', seller._id, { businessName, email });
     
     res.status(201).json({ 
       success: true, 
-      message: 'Seller created successfully', 
+      message: 'Seller created and auto-approved successfully', 
       seller: await Seller.findById(seller._id).populate('userId', 'name email phone')
     });
   } catch (err) { 
