@@ -118,14 +118,21 @@ const findNearestDeliveryPartners = async (orderId) => {
       console.log(`🏙️ Partner city: ${partner.city}, Restaurant city: ${order.sellerId?.address?.city}`);
       console.log(`🤝 City match: ${partner.city === order.sellerId?.address?.city || !partner.city}`);
       
-      if (parseFloat(distance) <= 3 && (partner.city === order.sellerId?.address?.city || !partner.city)) {
+      const distNum = parseFloat(distance);
+      if (distNum <= 25 || (partner.city && order.sellerId?.address?.city && partner.city.toLowerCase() === order.sellerId.address.city.toLowerCase())) {
         nearbyPartners.push(partner);
-        console.log(`✅ Partner ${partner.name} is within 3km and same city - ADDED TO LIST`);
+        console.log(`✅ Partner ${partner.name} is within delivery zone (${distNum}km) - ADDED TO LIST`);
       } else {
-        console.log(`❌ Partner ${partner.name} rejected - Distance: ${distance}km, City match: ${partner.city === order.sellerId?.address?.city || !partner.city}`);
+        console.log(`❌ Partner ${partner.name} rejected - Distance: ${distNum}km`);
       }
     }
     
+    // Fallback: If no partner found within 25km, include all online partners so order is not stuck
+    if (nearbyPartners.length === 0 && allOnlinePartners.length > 0) {
+      console.log('⚠️ Fallback: Including all online available partners so order is assigned');
+      nearbyPartners.push(...allOnlinePartners);
+    }
+
     console.log(`📍 Found ${nearbyPartners.length} nearby delivery partners`);
     console.log(`👥 Available partners:`, nearbyPartners.map(p => ({
       name: p.name,

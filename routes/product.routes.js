@@ -6,56 +6,54 @@ const pc = require('../controllers/product.controller');
 
 // Helper middleware to allow both seller and admin
 const sellerOrAdminAuth = (req, res, next) => {
-  // Try seller auth first
   sellerAuth(req, res, (err) => {
-    if (!err) return next();
-    // If seller auth fails, try admin auth
+    if (!err && req.seller) return next();
     adminAuth(req, res, next);
   });
 };
 
 // CRUD
 router.get('/', pc.getProducts);
-router.post('/', sellerAuth, ...s3Upload('image', 'products'), pc.createProduct);
-router.put('/:id', sellerAuth, ...s3Upload('image', 'products'), pc.updateProduct);
+router.post('/', sellerOrAdminAuth, ...s3Upload('image', 'products'), pc.createProduct);
+router.put('/:id', sellerOrAdminAuth, ...s3Upload('image', 'products'), pc.updateProduct);
 
 // Status
-router.patch('/:id/toggle', sellerAuth, pc.toggleAvailability);
-router.patch('/:id/out-of-stock', sellerAuth, pc.markOutOfStock);
-router.patch('/:id/in-stock', sellerAuth, pc.markInStock);
+router.patch('/:id/toggle', sellerOrAdminAuth, pc.toggleAvailability);
+router.patch('/:id/out-of-stock', sellerOrAdminAuth, pc.markOutOfStock);
+router.patch('/:id/in-stock', sellerOrAdminAuth, pc.markInStock);
 
 // Quick edit
-router.patch('/:id/price', sellerAuth, pc.updatePrice);
-router.patch('/:id/category', sellerAuth, pc.updateCategory);
-router.patch('/:id/veg-toggle', sellerAuth, pc.toggleVeg);
+router.patch('/:id/price', sellerOrAdminAuth, pc.updatePrice);
+router.patch('/:id/category', sellerOrAdminAuth, pc.updateCategory);
+router.patch('/:id/veg-toggle', sellerOrAdminAuth, pc.toggleVeg);
 
 // Bulk
-router.post('/bulk/create', sellerAuth, pc.bulkCreate);
-router.put('/bulk/update', sellerAuth, pc.bulkUpdate);
-router.post('/bulk/action', sellerAuth, pc.bulkAction);
+router.post('/bulk/create', sellerOrAdminAuth, pc.bulkCreate);
+router.put('/bulk/update', sellerOrAdminAuth, pc.bulkUpdate);
+router.post('/bulk/action', sellerOrAdminAuth, pc.bulkAction);
 
 // Duplicate
-router.post('/:id/duplicate', sellerAuth, pc.duplicateProduct);
+router.post('/:id/duplicate', sellerOrAdminAuth, pc.duplicateProduct);
 
 // Recycle Bin (Soft Delete)
-router.get('/recycle-bin', sellerAuth, pc.getRecycleBin);
-router.patch('/:id/archive', sellerAuth, pc.archiveProduct);
-router.patch('/:id/restore', sellerAuth, pc.restoreProduct);
-router.delete('/recycle-bin/empty', sellerAuth, pc.emptyRecycleBin);
-router.delete('/:id', sellerAuth, pc.hardDeleteProduct);
+router.get('/recycle-bin', sellerOrAdminAuth, pc.getRecycleBin);
+router.patch('/:id/archive', sellerOrAdminAuth, pc.archiveProduct);
+router.patch('/:id/restore', sellerOrAdminAuth, pc.restoreProduct);
+router.delete('/recycle-bin/empty', sellerOrAdminAuth, pc.emptyRecycleBin);
+router.delete('/:id', sellerOrAdminAuth, pc.hardDeleteProduct);
 
 // Image
-router.patch('/:id/image', sellerAuth, ...s3Upload('image', 'products'), pc.replaceImage);
-router.delete('/:id/image', sellerAuth, pc.removeImage);
+router.patch('/:id/image', sellerOrAdminAuth, ...s3Upload('image', 'products'), pc.replaceImage);
+router.delete('/:id/image', sellerOrAdminAuth, pc.removeImage);
 
 // Stock / Inventory
-router.patch('/:id/stock', sellerAuth, pc.updateStock);
-router.get('/inventory/low-stock', sellerAuth, pc.getLowStockProducts);
+router.patch('/:id/stock', sellerOrAdminAuth, pc.updateStock);
+router.get('/inventory/low-stock', sellerOrAdminAuth, pc.getLowStockProducts);
 
 // Metrics & Performance (allow both seller and admin)
 router.get('/metrics', sellerOrAdminAuth, pc.getInvestorMetrics);
 router.get('/health-score', sellerOrAdminAuth, pc.menuHealthScore);
-router.get('/:id/performance', sellerAuth, pc.getProductPerformance);
+router.get('/:id/performance', sellerOrAdminAuth, pc.getProductPerformance);
 
 // Publish & Happy Hour
 router.patch('/:id/publish', sellerAuth, pc.publishProduct);

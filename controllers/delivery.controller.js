@@ -201,26 +201,27 @@ exports.goOnline = async (req, res) => {
     };
     
     // Case 1: Coordinates provided in request
-    if (lat && lng) {
+    if (lat != null && lng != null && !isNaN(Number(lat)) && !isNaN(Number(lng))) {
       updateData.currentLocation = { 
         type: 'Point', 
-        coordinates: [lng, lat] 
+        coordinates: [Number(lng), Number(lat)] 
       };
       console.log(`  - Using provided coordinates: [${lng}, ${lat}]`);
     }
-    // Case 2: Existing location is valid (not Mumbai defaults)
+    // Case 2: Existing location is valid
     else if (currentPartner.currentLocation?.coordinates && 
-             !(currentPartner.currentLocation.coordinates[0] === 72.8777 && currentPartner.currentLocation.coordinates[1] === 19.076)) {
+             Array.isArray(currentPartner.currentLocation.coordinates) &&
+             currentPartner.currentLocation.coordinates[0] !== 0) {
       console.log(`  - Using existing valid location:`, currentPartner.currentLocation.coordinates);
-      // Don't update location - keep existing valid one
     }
-    // Case 3: No valid location - use Chandigarh as default (better than Mumbai)
+    // Case 3: No location - default to Deoria [83.7788, 26.5021]
     else {
       updateData.currentLocation = { 
         type: 'Point', 
-        coordinates: [76.74593435736934, 30.73561296326452] // Chandigarh default
+        coordinates: [83.7788, 26.5021] // Deoria default location
       };
-      console.log(`  - Using Chandigarh default location: [76.74593435736934, 30.73561296326452]`);
+      updateData.city = 'Deoria';
+      console.log(`  - Using Deoria default location: [83.7788, 26.5021]`);
     }
     
     console.log(`  - Final update data:`, updateData);

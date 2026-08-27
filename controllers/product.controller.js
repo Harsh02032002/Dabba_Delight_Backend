@@ -30,12 +30,25 @@ exports.getProducts = async (req, res) => {
   }
 };
 
+// Helper query to filter by sellerId only when logged in as seller (admin can manage any product)
+const getSellerQuery = (req, extra = {}) => {
+  const query = { ...extra };
+  if (req.seller && !req.admin) {
+    query.sellerId = req.seller._id;
+  }
+  return query;
+};
+
 // POST /api/products
 exports.createProduct = async (req, res) => {
   try {
     const data = req.body;
-    if (req.file && req.file.s3Url) data.image = req.file.s3Url;
-    data.sellerId = req.seller._id;
+    if (req.file && (req.file.s3Url || req.file.path)) data.image = req.file.s3Url || req.file.path;
+    if (!data.sellerId && req.seller) data.sellerId = req.seller._id;
+    if (!data.sellerId && req.admin) {
+      const firstSeller = await Seller.findOne();
+      if (firstSeller) data.sellerId = firstSeller._id;
+    }
     const product = await Product.create(data);
     res.status(201).json({ success: true, product });
   } catch (err) {
@@ -47,10 +60,9 @@ exports.createProduct = async (req, res) => {
 exports.updateProduct = async (req, res) => {
   try {
     const data = req.body;
-    if (req.file && req.file.s3Url) data.image = req.file.s3Url;
-    const product = await Product.findOneAndUpdate(
-      { _id: req.params.id, sellerId: req.seller._id }, data, { new: true }
-    );
+    if (req.file && (req.file.s3Url || req.file.path)) data.image = req.file.s3Url || req.file.path;
+    const query = getSellerQuery(req, { _id: req.params.id });
+    const product = await Product.findOneAndUpdate(query, data, { new: true });
     if (!product) return res.status(404).json({ message: 'Product not found' });
     res.json({ success: true, product });
   } catch (err) {
@@ -61,7 +73,7 @@ exports.updateProduct = async (req, res) => {
 // PATCH /api/products/:id/toggle
 exports.toggleAvailability = async (req, res) => {
   try {
-    const product = await Product.findOne({ _id: req.params.id, sellerId: req.seller._id });
+    const product = await Product.findOne(getSellerQuery(req, { _id: req.params.id }));
     if (!product) return res.status(404).json({ message: 'Not found' });
     product.isAvailable = !product.isAvailable;
     await product.save();
@@ -75,7 +87,7 @@ exports.toggleAvailability = async (req, res) => {
 exports.markOutOfStock = async (req, res) => {
   try {
     const product = await Product.findOneAndUpdate(
-      { _id: req.params.id, sellerId: req.seller._id },
+      getSellerQuery(req, { _id: req.params.id }),
       { isAvailable: false }, { new: true }
     );
     res.json({ success: true, product });
@@ -88,7 +100,7 @@ exports.markOutOfStock = async (req, res) => {
 exports.markInStock = async (req, res) => {
   try {
     const product = await Product.findOneAndUpdate(
-      { _id: req.params.id, sellerId: req.seller._id },
+      getSellerQuery(req, { _id: req.params.id }),
       { isAvailable: true }, { new: true }
     );
     res.json({ success: true, product });
@@ -102,7 +114,7 @@ exports.updatePrice = async (req, res) => {
   try {
     const { sellingPrice } = req.body;
     const product = await Product.findOneAndUpdate(
-      { _id: req.params.id, sellerId: req.seller._id },
+      getSellerQuery(req, { _id: req.params.id }),
       { sellingPrice }, { new: true }
     );
     res.json({ success: true, product });
@@ -116,7 +128,7 @@ exports.updateCategory = async (req, res) => {
   try {
     const { category } = req.body;
     const product = await Product.findOneAndUpdate(
-      { _id: req.params.id, sellerId: req.seller._id },
+      getSellerQuery(req, { _id: req.params.id }),
       { category }, { new: true }
     );
     res.json({ success: true, product });
@@ -128,7 +140,7 @@ exports.updateCategory = async (req, res) => {
 // PATCH /api/products/:id/veg-toggle
 exports.toggleVeg = async (req, res) => {
   try {
-    const product = await Product.findOne({ _id: req.params.id, sellerId: req.seller._id });
+    const product = await Product.findOne(getSellerQuery(req, { _id: req.params.id }));
     if (!product) return res.status(404).json({ message: 'Not found' });
     product.isVeg = !product.isVeg;
     await product.save();
@@ -141,7 +153,7 @@ exports.toggleVeg = async (req, res) => {
 // POST /api/products/bulk/create
 exports.bulkCreate = async (req, res) => {
   try {
-    const items = req.body.map(item => ({ ...item, sellerId: req.seller._id }));
+    const items = req.body.map(item => ({ ...item, sellerId: item.sellerId || req.seller?._id }));
     const products = await Product.insertMany(items);
     res.status(201).json({ success: true, count: products.length, products });
   } catch (err) {
@@ -153,7 +165,7 @@ exports.bulkCreate = async (req, res) => {
 exports.bulkUpdate = async (req, res) => {
   try {
     const ops = req.body.map(item => ({
-      updateOne: { filter: { _id: item._id, sellerId: req.seller._id }, update: { $set: item } },
+      updateOne: { filter: getSellerQuery(req, { _id: item._id }), update: { $set: item } },
     }));
     const result = await Product.bulkWrite(ops);
     res.json({ success: true, modified: result.modifiedCount });
@@ -165,7 +177,7 @@ exports.bulkUpdate = async (req, res) => {
 // POST /api/products/:id/duplicate
 exports.duplicateProduct = async (req, res) => {
   try {
-    const source = await Product.findOne({ _id: req.params.id, sellerId: req.seller._id });
+    const source = await Product.findOne(getSellerQuery(req, { _id: req.params.id }));
     if (!source) return res.status(404).json({ message: 'Not found' });
     const dup = source.toObject();
     delete dup._id; delete dup.createdAt; delete dup.updatedAt;
@@ -182,8 +194,8 @@ exports.duplicateProduct = async (req, res) => {
 exports.archiveProduct = async (req, res) => {
   try {
     const product = await Product.findOneAndUpdate(
-      { _id: req.params.id, sellerId: req.seller._id },
-      { isDeleted: true, deletedAt: new Date(), deletedBy: req.user._id, isAvailable: false },
+      getSellerQuery(req, { _id: req.params.id }),
+      { isDeleted: true, deletedAt: new Date(), deletedBy: req.user?._id, isAvailable: false },
       { new: true }
     );
     if (!product) return res.status(404).json({ message: 'Product not found' });
@@ -197,7 +209,7 @@ exports.archiveProduct = async (req, res) => {
 exports.restoreProduct = async (req, res) => {
   try {
     const product = await Product.findOneAndUpdate(
-      { _id: req.params.id, sellerId: req.seller._id, isDeleted: true },
+      getSellerQuery(req, { _id: req.params.id, isDeleted: true }),
       { isDeleted: false, deletedAt: null, deletedBy: null, isAvailable: true },
       { new: true }
     );
@@ -211,7 +223,7 @@ exports.restoreProduct = async (req, res) => {
 // GET /api/products/recycle-bin — list all soft-deleted products
 exports.getRecycleBin = async (req, res) => {
   try {
-    const products = await Product.find({ sellerId: req.seller._id, isDeleted: true })
+    const products = await Product.find(getSellerQuery(req, { isDeleted: true }))
       .sort({ deletedAt: -1 });
     res.json({ success: true, products });
   } catch (err) {
@@ -222,9 +234,9 @@ exports.getRecycleBin = async (req, res) => {
 // DELETE /api/products/:id — permanent delete
 exports.hardDeleteProduct = async (req, res) => {
   try {
-    const product = await Product.findOneAndDelete({ _id: req.params.id, sellerId: req.seller._id });
+    const product = await Product.findOneAndDelete(getSellerQuery(req, { _id: req.params.id }));
     if (!product) return res.status(404).json({ message: 'Not found' });
-    // Clean up S3 image
+    // Clean up image
     if (product.image) await deleteFromS3(product.image);
     if (product.images?.length) await Promise.all(product.images.map(img => deleteFromS3(img)));
     res.json({ success: true, message: 'Product permanently deleted' });
@@ -236,7 +248,7 @@ exports.hardDeleteProduct = async (req, res) => {
 // DELETE /api/products/recycle-bin/empty — empty recycle bin
 exports.emptyRecycleBin = async (req, res) => {
   try {
-    const result = await Product.deleteMany({ sellerId: req.seller._id, isDeleted: true });
+    const result = await Product.deleteMany(getSellerQuery(req, { isDeleted: true }));
     res.json({ success: true, message: `${result.deletedCount} products permanently deleted` });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -246,12 +258,13 @@ exports.emptyRecycleBin = async (req, res) => {
 // PATCH /api/products/:id/image
 exports.replaceImage = async (req, res) => {
   try {
-    if (!req.file || !req.file.s3Url) return res.status(400).json({ message: 'No image file' });
-    const existing = await Product.findOne({ _id: req.params.id, sellerId: req.seller._id });
+    const imageUrl = req.file?.s3Url || req.file?.path;
+    if (!req.file || !imageUrl) return res.status(400).json({ message: 'No image file' });
+    const existing = await Product.findOne(getSellerQuery(req, { _id: req.params.id }));
     if (existing?.image) await deleteFromS3(existing.image);
     const product = await Product.findOneAndUpdate(
-      { _id: req.params.id, sellerId: req.seller._id },
-      { image: req.file.s3Url },
+      getSellerQuery(req, { _id: req.params.id }),
+      { image: imageUrl },
       { new: true }
     );
     res.json({ success: true, product });
