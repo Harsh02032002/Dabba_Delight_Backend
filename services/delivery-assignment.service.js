@@ -250,21 +250,41 @@ const sendOrderToRiders = async (orderId, io) => {
           throw notifError; // Re-throw to see the full error
         }
         
-        // Send real-time notification to delivery partner
-        if (io) {
-          io.to(`delivery_partner_${partner._id}`).emit('delivery_request', {
-            orderId: orderId,
+        const calculatedDistance = calculateDistance(
+          partner.currentLocation.coordinates,
+          order.sellerId?.address?.location?.coordinates || [0, 0]
+        );
+
+        const requestPayload = {
+          orderId: orderId,
+          orderNumber: order.orderNumber,
+          restaurantName: order.sellerId?.businessName || 'Restaurant',
+          customerName: order.userId?.name || 'Customer',
+          pickupAddress: order.sellerId?.address?.fullAddress || order.sellerId?.address?.street || '',
+          dropAddress: order.deliveryAddress?.street || order.deliveryAddress?.fullAddress || '',
+          totalAmount: order.total,
+          estimatedTime: '25-30 mins',
+          distance: calculatedDistance,
+          order: {
+            _id: orderId,
             orderNumber: order.orderNumber,
-            restaurantName: order.sellerId.businessName,
-            customerName: order.userId.name,
+            restaurantName: order.sellerId?.businessName || 'Restaurant',
+            customerName: order.userId?.name || 'Customer',
+            pickupAddress: order.sellerId?.address?.fullAddress || order.sellerId?.address?.street || '',
+            dropAddress: order.deliveryAddress?.street || order.deliveryAddress?.fullAddress || '',
             totalAmount: order.total,
-            estimatedTime: '25-30 mins',
-            distance: calculateDistance(
-              partner.currentLocation.coordinates,
-              order.sellerId.address.location.coordinates
-            ),
-            timestamp: new Date()
-          });
+            distance: calculatedDistance,
+            status: 'out_for_delivery',
+            createdAt: order.createdAt || new Date(),
+          },
+          timeout: 30,
+          timestamp: new Date()
+        };
+
+        // Send real-time notification to delivery partner (both partner._id and partner.userId rooms)
+        if (io) {
+          io.to(`delivery_partner_${partner._id}`).emit('delivery_request', requestPayload);
+          io.to(`delivery_partner_${partner.userId}`).emit('delivery_request', requestPayload);
         }
 
         console.log(`📨 Order request sent to partner ${partner.name}`);
@@ -287,6 +307,12 @@ const sendOrderToRiders = async (orderId, io) => {
 
           console.log(`✅ Order successfully assigned to partner ${partner.name}`);
           
+          if (io) {
+            const updatedOrderDoc = await Order.findById(orderId).populate('sellerId', 'businessName address').populate('userId', 'name phone');
+            io.to(`delivery_partner_${partner._id}`).emit('orderAssigned', { order: updatedOrderDoc });
+            io.to(`delivery_partner_${partner.userId}`).emit('orderAssigned', { order: updatedOrderDoc });
+          }
+
           // Send notifications for successful assignment
           await Notification.create([
             {

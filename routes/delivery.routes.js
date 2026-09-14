@@ -29,8 +29,14 @@ router.post('/withdraw', auth, dc.withdrawFromWallet);
 
 // ─── New Order Management Routes (Step 4-6) ──────
 router.post('/orders/:orderId/accept', auth, dc.acceptOrder);
+router.put('/orders/:orderId/accept', auth, dc.acceptOrder);
+router.put('/order/accept', auth, dc.acceptOrder);
+router.post('/order/accept', auth, dc.acceptOrder);
 router.post('/orders/:orderId/reject', auth, dc.rejectOrder);
 router.patch('/orders/:orderId/status', auth, dc.updateDeliveryStatus);
+router.put('/order/status-update', auth, dc.updateDeliveryStatus);
+router.post('/order/confirm-delivery', auth, dc.confirmDeliveryOTP);
+router.post('/orders/:orderId/confirm-delivery', auth, dc.confirmDeliveryOTP);
 router.get('/partner/location/:partnerId', dc.getPartnerLocation);
 router.get('/orders/active', auth, dc.getActiveOrders);
 

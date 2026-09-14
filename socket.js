@@ -22,12 +22,32 @@ export const initSocket = (server) => {
     }
   });
 
-  io.on("connection", (socket) => {
+  io.on("connection", async (socket) => {
     const { role, id } = socket.user || {};
     if (role) socket.join(role);
-    if (role === "seller" && id) socket.join(`seller:${id}`);
-    if (role === "delivery_partner" && id) socket.join(`delivery_partner_${id}`);
-    if (role === "user" && id) socket.join(`user:${id}`);
+    if (role === "seller" && id) {
+      socket.join(`seller:${id}`);
+      socket.join(`seller_${id}`);
+    }
+    if (role === "user" && id) {
+      socket.join(`user:${id}`);
+      socket.join(`user_${id}`);
+    }
+    if (role === "delivery_partner" && id) {
+      socket.join(`delivery_partner_${id}`);
+      socket.join(`delivery_partner:${id}`);
+      try {
+        const { DeliveryPartner } = require("./models/Others");
+        const dp = await DeliveryPartner.findOne({ userId: id });
+        if (dp) {
+          socket.join(`delivery_partner_${dp._id}`);
+          socket.join(`delivery_partner:${dp._id}`);
+          socket.partnerId = dp._id.toString();
+        }
+      } catch (err) {
+        console.error("Error joining DeliveryPartner room:", err);
+      }
+    }
     
     console.log(`🔌 Socket connected: ${role} ${id || ''}`);
     

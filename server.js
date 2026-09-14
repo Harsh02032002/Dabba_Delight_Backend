@@ -414,6 +414,7 @@ app.use('/api/invoice', require('./routes/invoice.routes'));
 app.use('/api/payment', require('./routes/payment.routes'));
 app.use('/api/delivery', require('./routes/delivery.routes'));
 app.use('/api/partner', require('./routes/partner.routes'));
+app.use('/api/order', require('./routes/partner.routes'));
 app.use('/api/seller', require('./routes/seller.routes'));
 app.use('/api/seller/profile', require('./routes/seller.profile.routes'));
 app.use('/api/admin', require('./routes/admin.routes'));

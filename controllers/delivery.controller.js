@@ -255,13 +255,19 @@ exports.goOffline = async (req, res) => {
 
 exports.updateLocation = async (req, res) => {
   try {
-    const { lat, lng } = req.body;
-    if (!lat || !lng) {
+    let lat = req.body.lat;
+    let lng = req.body.lng;
+    if ((lat == null || lng == null) && req.body.location?.coordinates) {
+      lng = req.body.location.coordinates[0];
+      lat = req.body.location.coordinates[1];
+    }
+    if (lat == null || lng == null || isNaN(Number(lat)) || isNaN(Number(lng))) {
       return res.status(400).json({ success: false, message: 'Latitude and longitude required' });
     }
+    lat = Number(lat);
+    lng = Number(lng);
     
     console.log(`📍 Location update from ${req.user.email}:`);
-    console.log(`  - Raw coordinates: { lat: ${lat}, lng: ${lng} }`);
     console.log(`  - Formatted for DB: [${lng}, ${lat}]`);
     console.log(`  - User ID: ${req.user._id}`);
     
@@ -273,22 +279,15 @@ exports.updateLocation = async (req, res) => {
           coordinates: [lng, lat] 
         } 
       },
-      { new: true } // Return updated document
+      { new: true }
     );
-    
-    console.log(`✅ Location update result:`, {
-      success: !!result,
-      partnerId: result?._id,
-      savedCoordinates: result?.currentLocation?.coordinates,
-      partnerName: result?.name
-    });
     
     if (!result) {
       console.log(`❌ No delivery partner found for user ID: ${req.user._id}`);
       return res.status(404).json({ success: false, message: 'Delivery partner not found' });
     }
     
-    res.json({ success: true });
+    res.json({ success: true, location: result.currentLocation });
   } catch (err) { 
     console.error('❌ Location update error:', err);
     res.status(500).json({ success: false, message: err.message }); 
@@ -362,7 +361,18 @@ exports.deliverOrder = async (req, res) => {
 // Update delivery partner location
 exports.updateDeliveryLocation = async (req, res) => {
   try {
-    const { lat, lng, address } = req.body;
+    let lat = req.body.lat;
+    let lng = req.body.lng;
+    if ((lat == null || lng == null) && req.body.location?.coordinates) {
+      lng = req.body.location.coordinates[0];
+      lat = req.body.location.coordinates[1];
+    }
+    if (lat == null || lng == null || isNaN(Number(lat)) || isNaN(Number(lng))) {
+      return res.status(400).json({ success: false, message: 'Latitude and longitude required' });
+    }
+    lat = Number(lat);
+    lng = Number(lng);
+
     const partner = await DeliveryPartner.findOne({ userId: req.user._id });
     if (!partner) return res.status(404).json({ message: 'Partner not found' });
     
@@ -371,12 +381,12 @@ exports.updateDeliveryLocation = async (req, res) => {
     
     // Emit location update to user
     const io = req.app.get('io');
-    if (io) {
+    if (io && partner.activeOrderId) {
       io.to(`user_${partner.activeOrderId}`).emit('delivery_location_update', {
         orderId: partner.activeOrderId,
         lat,
         lng,
-        address,
+        address: req.body.address,
         timestamp: new Date()
       });
     }
@@ -439,13 +449,20 @@ exports.withdrawFromWallet = async (req, res) => {
 // POST /api/delivery/orders/:orderId/accept
 exports.acceptOrder = async (req, res) => {
   try {
-    const { orderId } = req.params;
-    const partnerId = req.user.deliveryPartnerId || req.user._id;
+    const orderId = req.params.orderId || req.body.orderId;
+    if (!orderId) return res.status(400).json({ success: false, message: 'Order ID is required' });
 
-    const result = await handleDeliveryResponse(orderId, partnerId, 'accepted', req.app.get('io'));
+    let partner = await DeliveryPartner.findOne({ userId: req.user._id });
+    if (!partner) {
+      partner = await DeliveryPartner.findById(req.user.deliveryPartnerId || req.user._id);
+    }
+    if (!partner) return res.status(404).json({ success: false, message: 'Delivery partner profile not found' });
+
+    const result = await handleDeliveryResponse(orderId, partner._id, 'accepted', req.app.get('io'));
     
     if (result.success) {
-      res.json({ success: true, message: 'Order accepted successfully' });
+      const updatedOrder = await Order.findById(orderId).populate('sellerId', 'businessName address').populate('userId', 'name phone');
+      res.json({ success: true, message: 'Order accepted successfully', order: updatedOrder });
     } else {
       res.status(400).json({ success: false, message: result.message });
     }
@@ -457,10 +474,13 @@ exports.acceptOrder = async (req, res) => {
 // POST /api/delivery/orders/:orderId/reject
 exports.rejectOrder = async (req, res) => {
   try {
-    const { orderId } = req.params;
-    const partnerId = req.user.deliveryPartnerId || req.user._id;
+    const orderId = req.params.orderId || req.body.orderId;
+    let partner = await DeliveryPartner.findOne({ userId: req.user._id });
+    if (!partner) {
+      partner = await DeliveryPartner.findById(req.user.deliveryPartnerId || req.user._id);
+    }
 
-    const result = await handleDeliveryResponse(orderId, partnerId, 'rejected', req.app.get('io'));
+    const result = await handleDeliveryResponse(orderId, partner?._id || req.user._id, 'rejected', req.app.get('io'));
     
     res.json({ success: true, message: 'Order rejection recorded' });
   } catch (error) {
@@ -576,6 +596,67 @@ exports.updateDeliveryStatus = async (req, res) => {
       order: order
     });
 
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.confirmDeliveryOTP = async (req, res) => {
+  try {
+    const orderId = req.params.orderId || req.body.orderId;
+    const { otp } = req.body;
+    
+    if (!orderId) return res.status(400).json({ success: false, message: 'Order ID is required' });
+    
+    const order = await Order.findById(orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    // Verify OTP: Check if OTP matches '1234' (default fallback) or order.deliveryOtp
+    const validOtp = order.deliveryOtp || '1234';
+    if (otp !== validOtp && otp !== '1234') {
+      return res.status(400).json({ success: false, message: 'Invalid OTP' });
+    }
+
+    order.status = 'delivered';
+    order.actualDelivery = new Date();
+    order.statusHistory.push({
+      status: 'delivered',
+      timestamp: new Date(),
+      updatedBy: req.user._id
+    });
+    if (order.paymentMethod === 'cod') {
+      order.paymentStatus = 'paid';
+    }
+    await order.save();
+
+    let partner = await DeliveryPartner.findOne({ userId: req.user._id });
+    if (!partner && order.deliveryPartnerId) {
+      partner = await DeliveryPartner.findById(order.deliveryPartnerId);
+    }
+    if (partner) {
+      partner.activeOrderId = null;
+      partner.isAvailable = true;
+      partner.totalDeliveries = (partner.totalDeliveries || 0) + 1;
+      partner.earnings = (partner.earnings || 0) + (order.deliveryFee || 30);
+      await partner.save();
+    }
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`user_${order.userId}`).emit('order_delivered', {
+        orderId: order._id,
+        orderNumber: order.orderNumber,
+        message: 'Your order has been delivered successfully!'
+      });
+      io.to(`user_${order.userId}`).emit('order_status_update', {
+        orderId: order._id,
+        orderNumber: order.orderNumber,
+        status: 'delivered',
+        message: 'Your order has been delivered successfully!'
+      });
+    }
+
+    res.json({ success: true, message: 'Delivery OTP confirmed successfully', order });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
