@@ -678,9 +678,31 @@ const platformConfigSchema = new mongoose.Schema(
     pushNotifications: { type: Boolean, default: true },
     maintenanceMode: { type: Boolean, default: false },
     minAppVersion: String,
-    deliveryFee: { type: Number, default: 40 },
+    deliveryFee: { type: Number, default: 30 },         // Legacy flat fee (used as fallback)
     platformFee: { type: Number, default: 5 },
     freeDeliveryThreshold: { type: Number, default: 500 },
+
+    // ── Distance-Based Delivery Pricing Slabs ────────────────────────
+    // Each slab: { upToKm: 4, customerFee: 30, riderPayout: 30 }
+    // Slabs should be ordered by upToKm ascending.
+    // Orders beyond maxServiceableKm are rejected as "Not Serviceable".
+    deliverySlabs: {
+      type: [
+        {
+          upToKm:      { type: Number, required: true }, // km upper boundary (inclusive)
+          customerFee: { type: Number, required: true }, // ₹ charged to customer
+          riderPayout: { type: Number, required: true }, // ₹ credited to rider
+          _id: false,
+        },
+      ],
+      default: [
+        { upToKm: 4,  customerFee: 30, riderPayout: 30 },
+        { upToKm: 6,  customerFee: 45, riderPayout: 40 },
+        { upToKm: 12, customerFee: 60, riderPayout: 50 },
+      ],
+    },
+    maxServiceableKm: { type: Number, default: 12 }, // Orders beyond this are rejected
+    maxDeliveryCap:   { type: Number, default: 90 }, // Max customer delivery fee cap (₹)
 
     // ── Footer Social Links ──────────────────────────
     socialYoutube: {

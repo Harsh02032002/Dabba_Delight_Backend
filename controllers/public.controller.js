@@ -44,6 +44,15 @@ exports.getPublicPlatformConfig = async (req, res) => {
       platformFee: o.platformFee,
       deliveryFee: o.deliveryFee,
       freeDeliveryAbove: o.freeDeliveryThreshold,
+      // Distance-based delivery pricing slabs
+      deliverySlabs: o.deliverySlabs || [
+        { upToKm: 4,  customerFee: 30, riderPayout: 30 },
+        { upToKm: 6,  customerFee: 45, riderPayout: 40 },
+        { upToKm: 12, customerFee: 60, riderPayout: 50 },
+      ],
+      maxServiceableKm: o.maxServiceableKm || 12,
+      maxDeliveryCap: o.maxDeliveryCap || 90,
+
       // General
       platformName: o.platformName,
       supportEmail: o.supportEmail,

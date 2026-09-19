@@ -213,10 +213,18 @@ io.on('connection', (socket) => {
 
     socket.on('locationUpdate', (data) => {
       console.log(`📍 Location update from ${socket.userEmail}:`, data);
+      // Broadcast to all clients (user app listens for delivery_location_update)
       socket.broadcast.emit('partnerLocationUpdate', {
         partnerId: socket.userId,
         partnerEmail: socket.userEmail,
         location: data,
+        timestamp: new Date()
+      });
+      // Also emit delivery_location_update so user can track rider on map
+      socket.broadcast.emit('delivery_location_update', {
+        partnerId: socket.userId,
+        lat: data.lat,
+        lng: data.lng,
         timestamp: new Date()
       });
     });

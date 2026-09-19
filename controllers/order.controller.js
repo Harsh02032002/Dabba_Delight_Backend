@@ -8,6 +8,7 @@ const { sendOrderToRiders } = require('../services/delivery-assignment.service')
 const { computeOrderGSTAndCommission, getGSTSettingsDoc } = require('../services/gst-order.service');
 const subscriptionService = require('../services/subscription.service');
 const walletController = require('../controllers/wallet.controller');
+const { computeDeliveryPricing, getDeliverySlabsFromDB } = require('../utils/deliveryPricing');
 
 // POST /api/user/orders/place
 exports.placeOrder = async (req, res) => {
@@ -34,11 +35,48 @@ exports.placeOrder = async (req, res) => {
     const settings = await getGSTSettingsDoc();
     const platformDoc = await PlatformConfig.findOne();
     const numSubtotal = Number(subtotal) || 0;
-    let numDel = Number(deliveryFee);
-    if (!Number.isFinite(numDel) || numDel < 0) numDel = 0;
-    if (platformDoc && platformDoc.deliveryFee != null && Number(platformDoc.deliveryFee) >= 0) {
-      numDel = Number(platformDoc.deliveryFee);
+
+    // ── Distance-Based Delivery Pricing (DB-driven slabs from Admin Panel) ────────
+    const sellerCoords = seller.address?.location?.coordinates; // [lng, lat]
+    const customerCoords = deliveryAddress?.location?.coordinates; // [lng, lat]
+
+    let numDel = 30; // Default to ₹30 (0-4 km slab) when coordinates unavailable
+    let riderPayoutAmount = 30;
+    let deliveryDistanceKm = 0;
+
+    if (sellerCoords && customerCoords &&
+        Array.isArray(sellerCoords) && sellerCoords.length === 2 &&
+        Array.isArray(customerCoords) && customerCoords.length === 2) {
+
+      // Fetch dynamic slabs from Admin Panel config
+      const { slabs, maxKm, maxCap } = await getDeliverySlabsFromDB();
+      const pricing = computeDeliveryPricing(sellerCoords, customerCoords, slabs, maxKm, maxCap);
+      console.log(`📏 Delivery distance: ${pricing.distanceKm} km | CustomerFee: ₹${pricing.customerFee} | RiderPayout: ₹${pricing.riderPayout} | Serviceable: ${pricing.serviceable} | MaxKm: ${maxKm} | MaxCap: ₹${maxCap}`);
+
+      if (!pricing.serviceable) {
+        return res.status(400).json({
+          success: false,
+          message: `🚫 Order Not Serviceable — Your location is ${pricing.distanceKm} km away. We currently deliver only up to ${maxKm} km.`,
+          distanceKm: pricing.distanceKm,
+          maxKm,
+        });
+      }
+
+      numDel = pricing.customerFee;
+      riderPayoutAmount = pricing.riderPayout;
+      deliveryDistanceKm = pricing.distanceKm;
+    } else {
+      // Coordinates not available — fall back to client-sent value or platform config
+      let fallbackFee = Number(deliveryFee);
+      if (!Number.isFinite(fallbackFee) || fallbackFee < 0) fallbackFee = 30;
+      if (platformDoc && platformDoc.deliveryFee != null && Number(platformDoc.deliveryFee) >= 0) {
+        fallbackFee = Number(platformDoc.deliveryFee);
+      }
+      numDel = fallbackFee;
+      console.log(`⚠️ No coordinates available for delivery pricing — using fallback ₹${numDel}`);
     }
+    // ────────────────────────────────────────────────────────────────────────
+
     const numPlat =
       platformDoc && platformDoc.platformFee != null
         ? Number(platformDoc.platformFee)
@@ -152,6 +190,8 @@ exports.placeOrder = async (req, res) => {
         paymentStatus: paymentMethod === 'cod' ? 'pending' : 'paid',
         subtotal: numSubtotal,
         deliveryFee: numDel,
+        riderPayout: riderPayoutAmount,
+        deliveryDistanceKm,
         platformFee: numPlat,
         gstAmount: tax.gstAmount,
         gstMode: tax.gstMode,
@@ -360,6 +400,7 @@ exports.getUserOrders = async (req, res) => {
     
     const orders = await Order.find(filter)
       .populate('sellerId', 'businessName type logo address')
+      .populate('deliveryPartnerId', 'name phone vehicleType')
       .sort({ createdAt: -1 });
       
     console.log('- Found orders count:', orders.length);

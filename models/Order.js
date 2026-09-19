@@ -32,7 +32,9 @@ const orderSchema = new mongoose.Schema({
     },
   },
   subtotal: Number,
-  deliveryFee: { type: Number, default: 40 },
+  deliveryFee: { type: Number, default: 30 },         // Customer-charged delivery fee (distance-based)
+  riderPayout: { type: Number, default: 30 },         // Rider earnings credit for this delivery
+  deliveryDistanceKm: { type: Number, default: 0 },   // Straight-line distance seller→customer in km
   platformFee: { type: Number, default: 5 },
   gstAmount: Number,
   gstMode: { type: String, enum: ['intra', 'inter', 'unknown'], default: 'unknown' },

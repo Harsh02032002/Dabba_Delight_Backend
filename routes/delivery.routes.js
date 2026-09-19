@@ -40,4 +40,8 @@ router.post('/orders/:orderId/confirm-delivery', auth, dc.confirmDeliveryOTP);
 router.get('/partner/location/:partnerId', dc.getPartnerLocation);
 router.get('/orders/active', auth, dc.getActiveOrders);
 
+// ─── Public: Delivery Fee Calculator ──────────────────────────
+// GET /api/delivery/calculate-fee?sellerId=...&customerLng=...&customerLat=...
+router.get('/calculate-fee', dc.calculateDeliveryFee);
+
 module.exports = router;

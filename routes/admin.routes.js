@@ -47,6 +47,7 @@ router.get('/audit-logs', adminAuth, ac.getAuditLogs);
 // Categories
 router.get('/categories', adminAuth, ac.getCategories);
 router.post('/categories', adminAuth, ac.createCategory);
+router.put('/categories/:id', adminAuth, ac.updateCategory);
 router.delete('/categories/:id', adminAuth, ac.deleteCategory);
 
 // Settlements

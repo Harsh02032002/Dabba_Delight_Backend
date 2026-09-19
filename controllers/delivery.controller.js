@@ -1,7 +1,9 @@
 const { DeliveryPartner, WalletTransaction, Notification } = require('../models/Others');
 const Order = require('../models/Order');
 const User = require('../models/User');
+const Seller = require('../models/Seller');
 const { handleDeliveryResponse } = require('../services/delivery-assignment.service');
+const { computeDeliveryPricing, getDeliverySlabsFromDB } = require('../utils/deliveryPricing');
 
 exports.loginPartner = async (req, res) => {
   try {
@@ -342,7 +344,7 @@ exports.deliverOrder = async (req, res) => {
     if (order.paymentMethod === 'cod') order.paymentStatus = 'paid';
     await order.save();
     const partner = await DeliveryPartner.findById(order.deliveryPartnerId);
-    if (partner) { partner.activeOrderId = null; partner.isAvailable = true; partner.totalDeliveries += 1; partner.earnings += order.deliveryFee || 30; await partner.save(); }
+    if (partner) { partner.activeOrderId = null; partner.isAvailable = true; partner.totalDeliveries += 1; partner.earnings += order.riderPayout || order.deliveryFee || 30; await partner.save(); }
     
     // Emit delivery completion to user
     const io = req.app.get('io');
@@ -637,7 +639,7 @@ exports.confirmDeliveryOTP = async (req, res) => {
       partner.activeOrderId = null;
       partner.isAvailable = true;
       partner.totalDeliveries = (partner.totalDeliveries || 0) + 1;
-      partner.earnings = (partner.earnings || 0) + (order.deliveryFee || 30);
+      partner.earnings = (partner.earnings || 0) + (order.riderPayout || order.deliveryFee || 30);
       await partner.save();
     }
 
@@ -704,6 +706,55 @@ exports.getActiveOrders = async (req, res) => {
 
     res.json({ success: true, orders });
 
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// GET /api/delivery/calculate-fee?sellerId=...&customerLng=...&customerLat=...
+// OR: ?sellerLng=...&sellerLat=...&customerLng=...&customerLat=...
+exports.calculateDeliveryFee = async (req, res) => {
+  try {
+    const { sellerId, sellerLng, sellerLat, customerLng, customerLat } = req.query;
+
+    let sellerCoords;
+
+    if (sellerId) {
+      const seller = await Seller.findById(sellerId).select('address');
+      if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+      sellerCoords = seller.address?.location?.coordinates; // [lng, lat]
+    } else if (sellerLng != null && sellerLat != null) {
+      sellerCoords = [Number(sellerLng), Number(sellerLat)];
+    }
+
+    if (!sellerCoords || sellerCoords.length < 2) {
+      return res.status(400).json({ success: false, message: 'Seller coordinates required (sellerId or sellerLng/sellerLat)' });
+    }
+
+    if (customerLng == null || customerLat == null) {
+      return res.status(400).json({ success: false, message: 'Customer coordinates required (customerLng, customerLat)' });
+    }
+
+    const customerCoords = [Number(customerLng), Number(customerLat)];
+
+    // Fetch dynamic slabs from Admin Panel config
+    const { slabs, maxKm, maxCap } = await getDeliverySlabsFromDB();
+    const pricing = computeDeliveryPricing(sellerCoords, customerCoords, slabs, maxKm, maxCap);
+
+    console.log(`📏 Fee Calc API | dist: ${pricing.distanceKm} km | fee: ₹${pricing.customerFee} | payout: ₹${pricing.riderPayout} | maxKm: ${maxKm} | maxCap: ₹${maxCap}`);
+
+    return res.json({
+      success: true,
+      distanceKm: pricing.distanceKm,
+      customerFee: pricing.customerFee,      // null if not serviceable
+      riderPayout: pricing.riderPayout,
+      serviceable: pricing.serviceable,
+      maxKm,
+      slabs,  // Return slabs so mobile app can display them
+      message: pricing.serviceable
+        ? `Delivery available at ₹${pricing.customerFee} for ${pricing.distanceKm} km`
+        : `Not serviceable — ${pricing.distanceKm} km exceeds ${maxKm} km limit`,
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

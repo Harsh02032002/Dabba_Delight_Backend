@@ -413,6 +413,19 @@ exports.deleteCategory = async (req, res) => {
   catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
+exports.updateCategory = async (req, res) => {
+  try {
+    const { name, icon, image, description, isActive } = req.body;
+    const update = { icon, image, description };
+    if (name) { update.name = name; update.slug = name.toLowerCase().replace(/\s+/g, '-'); }
+    if (isActive !== undefined) update.isActive = isActive;
+    const category = await Category.findByIdAndUpdate(req.params.id, update, { new: true });
+    if (!category) return res.status(404).json({ success: false, message: 'Category not found' });
+    await logAction(req, 'category_updated', 'Category', category._id, update);
+    res.json({ success: true, category });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
 // ─── Settlements ────────────────────────────────
 exports.getSettlements = async (req, res) => {
   try {
@@ -559,7 +572,9 @@ exports.updatePlatformConfig = async (req, res) => {
     let config = await PlatformConfig.findOne();
     if (!config) config = await PlatformConfig.create({});
     const patch = { ...req.body };
-    const numKeys = ['deliveryFee', 'platformFee', 'freeDeliveryThreshold'];
+
+    // Numeric fields — skip if blank
+    const numKeys = ['deliveryFee', 'platformFee', 'freeDeliveryThreshold', 'maxServiceableKm', 'maxDeliveryCap'];
     for (const k of numKeys) {
       if (patch[k] === '' || patch[k] === null) {
         delete patch[k];
@@ -567,9 +582,32 @@ exports.updatePlatformConfig = async (req, res) => {
       }
       if (patch[k] !== undefined) patch[k] = Number(patch[k]);
     }
+
+    // Validate and normalise deliverySlabs array
+    if (patch.deliverySlabs !== undefined) {
+      if (!Array.isArray(patch.deliverySlabs)) {
+        return res.status(400).json({ success: false, message: 'deliverySlabs must be an array' });
+      }
+      // Sanitise each slab
+      patch.deliverySlabs = patch.deliverySlabs
+        .filter(s => s && typeof s.upToKm !== 'undefined')
+        .map(s => ({
+          upToKm:      Number(s.upToKm),
+          customerFee: Number(s.customerFee),
+          riderPayout: Number(s.riderPayout),
+        }))
+        .filter(s => s.upToKm > 0 && s.customerFee >= 0 && s.riderPayout >= 0)
+        .sort((a, b) => a.upToKm - b.upToKm);
+
+      if (patch.deliverySlabs.length === 0) {
+        return res.status(400).json({ success: false, message: 'deliverySlabs must have at least 1 valid slab' });
+      }
+    }
+
     Object.assign(config, patch);
     await config.save();
     await logAction(req, 'platform_config_updated', 'PlatformConfig', config._id, patch);
     res.json({ success: true, ...config.toObject() });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
+
