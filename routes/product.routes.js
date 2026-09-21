@@ -20,11 +20,13 @@ const sellerOrAdminAuth = async (req, res, next) => {
 
     req.user = user;
 
+    // ── Admin ──────────────────────────────────────────────────────────────
     if (user.role === 'admin') {
       req.admin = user;
       return next();
     }
 
+    // ── Seller (by role) ───────────────────────────────────────────────────
     if (user.role === 'seller') {
       let seller = await Seller.findOne({ userId: user._id });
       if (!seller) {
@@ -36,6 +38,17 @@ const sellerOrAdminAuth = async (req, res, next) => {
         });
       }
       req.seller = seller;
+      return next();
+    }
+
+    // ── Fallback: check if user has a Seller profile (role may not be updated) ──
+    // This handles sellers who signed up as 'user' but have a Seller document
+    const sellerByProfile = await Seller.findOne({ userId: user._id });
+    if (sellerByProfile) {
+      // Auto-upgrade role to 'seller' in DB so future requests are faster
+      user.role = 'seller';
+      await user.save().catch(() => {}); // non-blocking
+      req.seller = sellerByProfile;
       return next();
     }
 
