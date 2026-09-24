@@ -96,6 +96,22 @@ if (!process.env.FRONTEND_URL) {
   console.log('🔄 Using fallback FRONTEND_URL');
 }
 
+// Cloudinary fallbacks (needed when .env not present on production server)
+if (!process.env.CLOUDINARY_CLOUD_NAME) {
+  process.env.CLOUDINARY_CLOUD_NAME = 'dnagpw02j';
+  console.log('🔄 Using fallback CLOUDINARY_CLOUD_NAME');
+}
+
+if (!process.env.CLOUDINARY_API_KEY) {
+  process.env.CLOUDINARY_API_KEY = '877691165821265';
+  console.log('🔄 Using fallback CLOUDINARY_API_KEY');
+}
+
+if (!process.env.CLOUDINARY_API_SECRET) {
+  process.env.CLOUDINARY_API_SECRET = '6tlAylPl-wxPCwa93RPsDDRk7WM';
+  console.log('🔄 Using fallback CLOUDINARY_API_SECRET');
+}
+
 if (!process.env.BACKEND_URL) {
   process.env.BACKEND_URL = process.env.NODE_ENV === 'production' ? 'https://api.dabbanation.in' : `http://localhost:${process.env.PORT || 5000}`;
   console.log('🔄 Using fallback BACKEND_URL:', process.env.BACKEND_URL);

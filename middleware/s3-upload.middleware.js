@@ -8,13 +8,23 @@ const { Readable } = require('stream');
 let cloudinary;
 try {
   cloudinary = require('cloudinary').v2;
-  cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME || 'placeholder_cloud_name',
-    api_key: process.env.CLOUDINARY_API_KEY || 'placeholder_api_key',
-    api_secret: process.env.CLOUDINARY_API_SECRET || 'placeholder_api_secret',
-  });
 } catch (e) {
   console.warn('⚠️ Cloudinary package not installed. Run: npm install cloudinary');
+}
+
+// Lazy-configure Cloudinary on first use (ensures server.js fallback env vars are applied)
+let cloudinaryConfigured = false;
+function ensureCloudinaryConfigured() {
+  if (!cloudinary) throw new Error('Cloudinary not installed. Run: npm install cloudinary');
+  if (!cloudinaryConfigured) {
+    cloudinary.config({
+      cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+      api_key:    process.env.CLOUDINARY_API_KEY,
+      api_secret: process.env.CLOUDINARY_API_SECRET,
+    });
+    cloudinaryConfigured = true;
+    console.log('☁️ Cloudinary configured with cloud_name:', process.env.CLOUDINARY_CLOUD_NAME);
+  }
 }
 
 // ─── Multer memory storage (buffers file before upload) ─
@@ -40,7 +50,7 @@ async function uploadToS3(file, folder = 'products') {
 }
 
 async function uploadToCloudinary(file, folder = 'products') {
-  if (!cloudinary) throw new Error('Cloudinary not installed. Run: npm install cloudinary');
+  ensureCloudinaryConfigured();
 
   return new Promise((resolve, reject) => {
     const uniqueId = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
@@ -75,7 +85,7 @@ async function deleteFromS3(fileUrl) {
 
 async function deleteFromCloudinary(fileUrl) {
   try {
-    if (!cloudinary) return;
+    ensureCloudinaryConfigured();
     if (!fileUrl || !fileUrl.includes('cloudinary.com')) return;
 
     // Extract public_id from Cloudinary URL
