@@ -71,7 +71,11 @@ exports.getNearbySellers = async (req, res) => {
   try {
     const { lat, lng, radius = 50000, type, city, locationName } = req.query;
     const filter = { isActive: true };
-    if (type) filter.type = type;
+    if (type) {
+      filter.type = (type === 'home_chef' || type === 'home-chef')
+        ? { $in: ['home_chef', 'home-chef'] }
+        : type;
+    }
 
     let sellers = [];
     if (lat && lng) {

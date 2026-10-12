@@ -20,6 +20,9 @@ router.delete('/address/:id', auth, lc.deleteAddress);
 router.patch('/address/:id/set-default', auth, lc.setDefaultAddress);
 router.post('/reverse-geocode', auth, lc.reverseGeocode);
 
+// Orders Tracking
+router.get('/orders/:orderId/track', auth, uc.getOrderTracking);
+
 // Dabba Nation — subscriptions
 router.get('/subscriptions/active', auth, subController.getActiveForUser);
 router.get('/subscriptions/my-subscriptions', auth, subController.getMySubscriptions);

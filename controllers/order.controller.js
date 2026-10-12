@@ -14,7 +14,7 @@ const { computeDeliveryPricing, getDeliverySlabsFromDB } = require('../utils/del
 exports.placeOrder = async (req, res) => {
   const io = req.app.get('io');
   try {
-    const {
+    let {
       items,
       sellerId,
       deliveryAddress,
@@ -26,6 +26,27 @@ exports.placeOrder = async (req, res) => {
       discount,
       specialInstructions,
     } = req.body;
+
+    // ── Auto-resolve sellerId if missing or empty string ────────
+    if (!sellerId || typeof sellerId !== 'string' || sellerId.trim() === '') {
+      if (items && Array.isArray(items) && items.length > 0) {
+        const firstItemId = items[0].menuItemId || items[0].id || items[0]._id;
+        if (firstItemId && mongoose.Types.ObjectId.isValid(firstItemId)) {
+          const product = await Product.findById(firstItemId);
+          if (product && product.sellerId) {
+            sellerId = product.sellerId.toString();
+            console.log(`[placeOrder] Auto-recovered sellerId: ${sellerId} from product ${firstItemId}`);
+          }
+        }
+      }
+    }
+
+    if (!sellerId || !mongoose.Types.ObjectId.isValid(sellerId)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid or missing restaurant/seller ID. Please re-add items to your cart and try again.' 
+      });
+    }
 
     const seller = await Seller.findById(sellerId);
     if (!seller) {
@@ -186,6 +207,10 @@ exports.placeOrder = async (req, res) => {
         sellerId,
         items,
         deliveryAddress: sanitizedAddress,
+        pickupLocation: (seller.address?.location?.coordinates && seller.address.location.coordinates.length === 2)
+          ? { type: 'Point', coordinates: [Number(seller.address.location.coordinates[0]), Number(seller.address.location.coordinates[1])] }
+          : { type: 'Point', coordinates: [77.2090, 28.6139] },
+        dropLocation: sanitizedAddress.location || { type: 'Point', coordinates: [77.2190, 28.6229] },
         paymentMethod,
         paymentStatus: paymentMethod === 'cod' ? 'pending' : 'paid',
         subtotal: numSubtotal,

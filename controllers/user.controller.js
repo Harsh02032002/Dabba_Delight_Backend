@@ -1,7 +1,8 @@
-const { Notification, WalletTransaction, Banner } = require('../models/Others');
+const { Notification, WalletTransaction, Banner, DeliveryPartner } = require('../models/Others');
 const User = require('../models/User');
 const Seller = require('../models/Seller');
 const Product = require('../models/Product');
+const Order = require('../models/Order');
 const RatingService = require('../services/rating.service');
 
 // ─── Notifications ──────────────────────────────
@@ -92,20 +93,24 @@ const DEFAULT_COVER = 'https://images.unsplash.com/photo-1504674900247-0877df9cc
 exports.getSellers = async (req, res) => {
   try {
     const filter = { isActive: true };
-    if (req.query.type) filter.type = req.query.type;
+    if (req.query.type && req.query.type !== 'all') {
+      const typeVal = req.query.type;
+      filter.type = (typeVal === 'home_chef' || typeVal === 'home-chef')
+        ? { $in: ['home_chef', 'home-chef'] }
+        : typeVal;
+    }
     if (req.query.search) filter.businessName = { $regex: req.query.search, $options: 'i' };
-    // Select only required fields for faster response
+    
     const sellers = await Seller.find(filter)
       .select('_id businessName type logo coverImage rating totalOrders totalRevenue cuisines address isActive isVerified description')
       .sort({ rating: -1 })
-      .lean(); // Use lean() for faster queries
+      .lean();
 
-    // Add default images if missing
     const sellersWithImages = sellers.map(seller => ({
       ...seller,
       logo: seller.logo || DEFAULT_LOGO,
       coverImage: seller.coverImage || DEFAULT_COVER,
-      image: seller.coverImage || DEFAULT_COVER, // Also provide 'image' for mobile app compatibility
+      image: seller.coverImage || DEFAULT_COVER,
     }));
 
     res.json({ success: true, sellers: sellersWithImages, total: sellers.length });
@@ -116,21 +121,32 @@ exports.getMenuItems = async (req, res) => {
   try {
     // Build product filter
     const filter = { isAvailable: true, isDeleted: { $ne: true } };
-    
-    // If sellerIds passed directly (from frontend nearby sellers), use them
-    if (req.query.sellerIds) {
-      const ids = req.query.sellerIds.split(',').map(s => s.trim()).filter(Boolean);
-      filter.sellerId = { $in: ids };
-    } else if (req.query.sellerId) {
-      filter.sellerId = req.query.sellerId;
-    } else if (req.query.type) {
-      // Filter by seller type (support both home_chef and home-chef)
+
+    let targetSellerIds = null;
+    if (req.query.type && req.query.type !== 'all') {
       const typeVal = req.query.type;
       const typeQuery = (typeVal === 'home_chef' || typeVal === 'home-chef') 
         ? { $in: ['home_chef', 'home-chef'] } 
         : typeVal;
-      const typeSellers = await Seller.find({ isActive: true, type: typeQuery }).select('_id').lean();
-      filter.sellerId = { $in: typeSellers.map(s => s._id) };
+      const matchingSellers = await Seller.find({ isActive: true, type: typeQuery }).select('_id').lean();
+      targetSellerIds = matchingSellers.map(s => s._id.toString());
+    }
+
+    if (req.query.sellerIds) {
+      let ids = req.query.sellerIds.split(',').map(s => s.trim()).filter(Boolean);
+      if (targetSellerIds) {
+        // Strictly filter to only requested type sellers
+        ids = ids.filter(id => targetSellerIds.includes(id.toString()));
+      }
+      filter.sellerId = { $in: ids };
+    } else if (req.query.sellerId) {
+      if (targetSellerIds && !targetSellerIds.includes(req.query.sellerId.toString())) {
+        filter.sellerId = null; // Mismatch with requested type
+      } else {
+        filter.sellerId = req.query.sellerId;
+      }
+    } else if (targetSellerIds) {
+      filter.sellerId = { $in: targetSellerIds };
     }
     
     if (req.query.category) filter.category = req.query.category;
@@ -140,16 +156,29 @@ exports.getMenuItems = async (req, res) => {
       { tags: { $regex: req.query.search, $options: 'i' } },
     ];
 
-    const products = await Product.find(filter)
+    let products = await Product.find(filter)
       .select('_id sellerId name description sellingPrice discountPrice category image isVeg preparationTime rating totalOrders stock')
       .populate('sellerId', '_id businessName type logo rating')
       .sort({ rating: -1 })
       .limit(Number(req.query.limit) || 50)
       .skip(((Number(req.query.page) || 1) - 1) * (Number(req.query.limit) || 50))
       .lean();
+
+    // Security guarantee: filter out any product whose populated seller type doesn't match
+    if (req.query.type && req.query.type !== 'all') {
+      const typeVal = req.query.type;
+      products = products.filter(p => {
+        if (!p.sellerId) return false;
+        const sType = typeof p.sellerId === 'object' ? p.sellerId.type : null;
+        if (!sType) return false;
+        if (typeVal === 'home_chef' || typeVal === 'home-chef') {
+          return sType === 'home_chef' || sType === 'home-chef';
+        }
+        return sType === typeVal;
+      });
+    }
     
-    const total = await Product.countDocuments(filter);
-    res.json({ success: true, products, total });
+    res.json({ success: true, products, total: products.length });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
@@ -299,5 +328,86 @@ exports.rateSeller = async (req, res) => {
     res.json({ success: true, rating: seller.rating });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// GET /api/user/orders/:orderId/track
+exports.getOrderTracking = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const order = await Order.findById(orderId)
+      .populate('sellerId', 'businessName phone address')
+      .populate('deliveryPartnerId', 'name phone vehicleType vehicleNumber currentLocation rating');
+
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    // Security check: only order owner or delivery or admin can track
+    if (
+      order.userId.toString() !== req.user._id.toString() &&
+      req.user.role !== 'admin' &&
+      req.user.role !== 'delivery'
+    ) {
+      return res.status(403).json({ success: false, message: 'Unauthorized to track this order' });
+    }
+
+    // Extract coordinates safely
+    const sellerCoords = order.sellerId?.address?.location?.coordinates;
+    const pickupCoords = order.pickupLocation?.coordinates || 
+      (sellerCoords && sellerCoords.length === 2 ? sellerCoords : [77.2090, 28.6139]);
+
+    const custCoords = order.deliveryAddress?.location?.coordinates;
+    const dropCoords = order.dropLocation?.coordinates || 
+      (custCoords && custCoords.length === 2 ? custCoords : [77.2190, 28.6229]);
+
+    let riderLocation = null;
+    let riderInfo = null;
+
+    if (order.deliveryPartnerId) {
+      const dp = order.deliveryPartnerId;
+      if (dp.currentLocation?.coordinates && Array.isArray(dp.currentLocation.coordinates) && dp.currentLocation.coordinates.length === 2) {
+        riderLocation = {
+          lat: dp.currentLocation.coordinates[1],
+          lng: dp.currentLocation.coordinates[0],
+        };
+      }
+      riderInfo = {
+        name: dp.name || 'Delivery Partner',
+        phone: dp.phone || '',
+        vehicleType: dp.vehicleType || 'bike',
+        vehicleNumber: dp.vehicleNumber || '',
+        rating: dp.rating || 5.0,
+      };
+    }
+
+    res.json({
+      success: true,
+      order: {
+        _id: order._id,
+        orderNumber: order.orderNumber,
+        status: order.status,
+        statusHistory: order.statusHistory,
+        restaurantName: order.sellerId?.businessName || 'Restaurant',
+        restaurantPhone: order.sellerId?.phone || '',
+        deliveryAddress: order.deliveryAddress,
+        pickupCoords: {
+          lat: pickupCoords[1],
+          lng: pickupCoords[0],
+        },
+        dropCoords: {
+          lat: dropCoords[1],
+          lng: dropCoords[0],
+        },
+        riderLocation,
+        riderInfo,
+        total: order.total,
+        deliveryFee: order.deliveryFee,
+        createdAt: order.createdAt,
+      },
+    });
+  } catch (err) {
+    console.error('getOrderTracking error:', err);
+    res.status(500).json({ success: false, message: err.message });
   }
 };

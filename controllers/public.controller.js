@@ -36,7 +36,6 @@ exports.getPublicGSTSettings = async (req, res) => {
 exports.getPublicPlatformConfig = async (req, res) => {
   try {
     let c = await PlatformConfig.findOne();
-    if (!c) c = await PlatformConfig.create({});
     const o = typeof c.toObject === "function" ? c.toObject() : c;
     res.json({
       success: true,

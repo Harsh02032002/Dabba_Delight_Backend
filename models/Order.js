@@ -67,6 +67,14 @@ const orderSchema = new mongoose.Schema({
   actualDelivery: Date,
   deliveryPartnerId: { type: mongoose.Schema.Types.ObjectId, ref: 'DeliveryPartner' },
   deliveryLocation: { lat: Number, lng: Number },
+  pickupLocation: {
+    type: { type: String, enum: ['Point'], default: 'Point' },
+    coordinates: { type: [Number], default: [77.2090, 28.6139] },
+  },
+  dropLocation: {
+    type: { type: String, enum: ['Point'], default: 'Point' },
+    coordinates: { type: [Number], default: [77.2190, 28.6229] },
+  },
   statusHistory: [{
     status: String,
     timestamp: { type: Date, default: Date.now },

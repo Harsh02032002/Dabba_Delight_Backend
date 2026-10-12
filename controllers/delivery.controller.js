@@ -5,6 +5,50 @@ const Seller = require('../models/Seller');
 const { handleDeliveryResponse } = require('../services/delivery-assignment.service');
 const { computeDeliveryPricing, getDeliverySlabsFromDB } = require('../utils/deliveryPricing');
 
+// Helper to reliably credit delivery fee to rider earnings and wallet
+async function creditRiderDeliveryFee(partnerIdOrUserId, order) {
+  try {
+    let partner = await DeliveryPartner.findOne({ userId: partnerIdOrUserId });
+    if (!partner) {
+      partner = await DeliveryPartner.findById(partnerIdOrUserId);
+    }
+    if (!partner && order.deliveryPartnerId) {
+      partner = await DeliveryPartner.findById(order.deliveryPartnerId);
+    }
+    if (!partner) {
+      console.warn(`[creditRiderDeliveryFee] No partner found for ID: ${partnerIdOrUserId}`);
+      return null;
+    }
+
+    const riderFee = Number(order.deliveryFee || order.riderPayout || 30);
+    partner.activeOrderId = null;
+    partner.isAvailable = true;
+    partner.totalDeliveries = (partner.totalDeliveries || 0) + 1;
+    partner.todayDeliveries = (partner.todayDeliveries || 0) + 1;
+    partner.earnings = Number(((partner.earnings || 0) + riderFee).toFixed(2));
+    partner.todayEarnings = Number(((partner.todayEarnings || 0) + riderFee).toFixed(2));
+    partner.weekEarnings = Number(((partner.weekEarnings || 0) + riderFee).toFixed(2));
+    partner.wallet = Number(((partner.wallet || 0) + riderFee).toFixed(2));
+    await partner.save();
+
+    await WalletTransaction.create({
+      deliveryPartnerId: partner._id,
+      userId: partner.userId,
+      type: 'credit',
+      amount: riderFee,
+      description: `Delivery payout for Order #${order.orderNumber || order._id}`,
+      referenceType: 'delivery_payout',
+      balance: partner.wallet,
+    }).catch(e => console.error('WalletTransaction create error:', e.message));
+
+    console.log(`💰 Credited ₹${riderFee} to rider ${partner.name}. Total Earnings: ₹${partner.earnings}, Today: ₹${partner.todayEarnings}`);
+    return partner;
+  } catch (err) {
+    console.error('Error crediting rider delivery fee:', err);
+    return null;
+  }
+}
+
 exports.loginPartner = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -110,11 +154,26 @@ exports.getPartnerProfile = async (req, res) => {
 
 exports.getOrderHistory = async (req, res) => {
   try {
-    const partner = await DeliveryPartner.findOne({ userId: req.user._id });
+    let partner = await DeliveryPartner.findOne({ userId: req.user._id });
+    if (!partner) partner = await DeliveryPartner.findById(req.user._id);
+    if (!partner) return res.status(404).json({ success: false, message: 'Partner not found' });
+
     const orders = await Order.find({ deliveryPartnerId: partner._id })
+      .populate('userId', 'name phone')
+      .populate('sellerId', 'businessName address phone')
       .sort({ createdAt: -1 })
-      .limit(50);
-    res.json({ success: true, orders });
+      .limit(50)
+      .lean();
+
+    const formatted = (orders || []).map(o => ({
+      ...o,
+      customerName: o.userId?.name || o.customerName || 'Customer',
+      customerPhone: o.userId?.phone || o.customerPhone || '',
+      restaurantName: o.sellerId?.businessName || o.restaurantName || 'Restaurant',
+      pickupAddress: o.sellerId?.address?.fullAddress || o.pickupAddress || 'Restaurant Address',
+    }));
+
+    res.json({ success: true, orders: formatted });
   } catch (err) { 
     res.status(500).json({ success: false, message: err.message }); 
   }
@@ -339,16 +398,24 @@ exports.deliverOrder = async (req, res) => {
   try {
     const order = await Order.findById(req.params.orderId);
     if (!order) return res.status(404).json({ message: 'Order not found' });
-    order.status = 'delivered'; order.actualDelivery = new Date();
+    order.status = 'delivered';
+    order.actualDelivery = new Date();
     order.statusHistory.push({ status: 'delivered', timestamp: new Date() });
     if (order.paymentMethod === 'cod') order.paymentStatus = 'paid';
     await order.save();
-    const partner = await DeliveryPartner.findById(order.deliveryPartnerId);
-    if (partner) { partner.activeOrderId = null; partner.isAvailable = true; partner.totalDeliveries += 1; partner.earnings += order.riderPayout || order.deliveryFee || 30; await partner.save(); }
+
+    // Credit delivery fee to rider
+    await creditRiderDeliveryFee(order.deliveryPartnerId, order);
     
     // Emit delivery completion to user
     const io = req.app.get('io');
     if (io) {
+      io.to(`order_${order._id}`).emit('delivery_status_update', {
+        orderId: order._id,
+        orderNumber: order.orderNumber,
+        status: 'delivered',
+        message: 'Your order has been delivered successfully!'
+      });
       io.to(`user_${order.userId}`).emit('order_delivered', {
         orderId: order._id,
         orderNumber: order.orderNumber,
@@ -381,16 +448,20 @@ exports.updateDeliveryLocation = async (req, res) => {
     partner.currentLocation = { type: 'Point', coordinates: [lng, lat] };
     await partner.save();
     
-    // Emit location update to user
+    // Emit location update to user and order room
     const io = req.app.get('io');
-    if (io && partner.activeOrderId) {
-      io.to(`user_${partner.activeOrderId}`).emit('delivery_location_update', {
-        orderId: partner.activeOrderId,
+    const activeOrderId = req.body.orderId || partner.activeOrderId;
+    if (io && activeOrderId) {
+      const payload = {
+        orderId: activeOrderId,
+        partnerId: partner._id,
         lat,
         lng,
         address: req.body.address,
         timestamp: new Date()
-      });
+      };
+      io.to(`order_${activeOrderId}`).emit('delivery_location_update', payload);
+      io.to(`user_${activeOrderId}`).emit('delivery_location_update', payload);
     }
     
     res.json({ success: true, location: partner.currentLocation });
@@ -399,17 +470,113 @@ exports.updateDeliveryLocation = async (req, res) => {
 
 exports.getEarnings = async (req, res) => {
   try {
-    const partner = await DeliveryPartner.findOne({ userId: req.user._id });
-    if (!partner) return res.status(404).json({ message: 'Partner not found' });
-    res.json({ success: true, earnings: partner.earnings, totalDeliveries: partner.totalDeliveries });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+    let partner = await DeliveryPartner.findOne({ userId: req.user._id });
+    if (!partner) {
+      partner = await DeliveryPartner.findById(req.user._id);
+    }
+    if (!partner) return res.status(404).json({ success: false, message: 'Partner not found' });
+
+    // Fetch delivered orders for this partner to compute accurate today/week/month stats
+    const deliveredOrders = await Order.find({
+      deliveryPartnerId: partner._id,
+      status: 'delivered',
+    }).sort({ actualDelivery: -1, createdAt: -1 }).limit(100).lean();
+
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startOfWeek = new Date(now);
+    startOfWeek.setDate(now.getDate() - ((now.getDay() + 6) % 7)); // Monday start
+    startOfWeek.setHours(0, 0, 0, 0);
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    let calcToday = 0;
+    let calcWeek = 0;
+    let calcMonth = 0;
+    let calcTotal = 0;
+    let todayDeliveries = 0;
+    const weekArr = [0, 0, 0, 0, 0, 0, 0]; // Mon..Sun
+
+    deliveredOrders.forEach((o) => {
+      const fee = Number(o.deliveryFee || o.riderPayout || 30);
+      calcTotal += fee;
+      const d = new Date(o.actualDelivery || o.createdAt);
+      if (d >= startOfToday) {
+        calcToday += fee;
+        todayDeliveries += 1;
+      }
+      if (d >= startOfWeek) {
+        calcWeek += fee;
+        const dayIdx = (d.getDay() + 6) % 7; // Mon = 0
+        weekArr[dayIdx] += fee;
+      }
+      if (d >= startOfMonth) {
+        calcMonth += fee;
+      }
+    });
+
+    const today = calcToday > 0 ? calcToday : (partner.todayEarnings || 0);
+    const week = calcWeek > 0 ? calcWeek : (partner.weekEarnings || 0);
+    const total = calcTotal > 0 ? calcTotal : (partner.earnings || 0);
+    const month = calcMonth > 0 ? calcMonth : total;
+
+    res.json({
+      success: true,
+      earnings: total,
+      todayEarnings: today,
+      weekEarnings: week,
+      totalDeliveries: deliveredOrders.length || partner.totalDeliveries || 0,
+      todayDeliveries: todayDeliveries || partner.todayDeliveries || 0,
+      wallet: partner.wallet || total,
+      summary: {
+        today,
+        week,
+        month,
+        total,
+        deliveries: deliveredOrders.length || partner.totalDeliveries || 0,
+        ordersToday: todayDeliveries || partner.todayDeliveries || 0,
+        ordersTotal: deliveredOrders.length || partner.totalDeliveries || 0,
+        walletBalance: partner.wallet != null ? partner.wallet : total,
+      },
+      weeklyData: weekArr,
+    });
+  } catch (err) {
+    console.error('getEarnings error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
 };
 
 exports.getActiveOrder = async (req, res) => {
   try {
-    const partner = await DeliveryPartner.findOne({ userId: req.user._id }).populate('activeOrderId');
-    if (!partner) return res.status(404).json({ message: 'Partner not found' });
-    res.json({ success: true, order: partner.activeOrderId });
+    let partner = await DeliveryPartner.findOne({ userId: req.user._id });
+    if (!partner) partner = await DeliveryPartner.findById(req.user._id);
+    if (!partner) return res.status(404).json({ success: false, message: 'Partner not found' });
+
+    let order = null;
+    if (partner.activeOrderId) {
+      order = await Order.findById(partner.activeOrderId)
+        .populate('userId', 'name phone')
+        .populate('sellerId', 'businessName address phone')
+        .lean();
+    }
+    if (!order) {
+      order = await Order.findOne({
+        deliveryPartnerId: partner._id,
+        status: { $in: ['accepted', 'out_for_delivery', 'picked', 'arrived_at_restaurant', 'order_picked_up'] }
+      })
+      .populate('userId', 'name phone')
+      .populate('sellerId', 'businessName address phone')
+      .sort({ createdAt: -1 })
+      .lean();
+    }
+
+    if (order) {
+      order.customerName = order.userId?.name || order.customerName || 'Customer';
+      order.customerPhone = order.userId?.phone || order.customerPhone || '';
+      order.restaurantName = order.sellerId?.businessName || order.restaurantName || 'Restaurant';
+      order.pickupAddress = order.sellerId?.address?.fullAddress || order.pickupAddress || 'Restaurant Address';
+    }
+
+    res.json({ success: true, order: order || null });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
@@ -567,12 +734,14 @@ exports.updateDeliveryStatus = async (req, res) => {
 
     if (status === 'delivered') {
       order.actualDelivery = new Date();
+      order.status = 'delivered';
+      if (order.paymentMethod === 'cod') {
+        order.paymentStatus = 'paid';
+      }
+      await order.save();
       
-      // Mark partner as available again
-      await DeliveryPartner.findByIdAndUpdate(partnerId, {
-        isAvailable: true,
-        currentOrder: null
-      });
+      // Credit delivery fee to delivery partner's wallet and earnings
+      await creditRiderDeliveryFee(partnerId, order);
 
       await Notification.create({
         userId: order.userId,
@@ -584,11 +753,17 @@ exports.updateDeliveryStatus = async (req, res) => {
       });
 
       if (io) {
-        io.to(`user_${order.userId}`).emit('delivery_status_update', {
+        const payload = {
           orderId,
-          status,
+          orderNumber: order.orderNumber,
+          status: 'delivered',
           message: 'Order delivered successfully!'
-        });
+        };
+        io.to(`order_${orderId}`).emit('delivery_status_update', payload);
+        io.to(`order_${orderId}`).emit('order_status_update', payload);
+        io.to(`user_${order.userId}`).emit('delivery_status_update', payload);
+        io.to(`user_${order.userId}`).emit('order_status_update', payload);
+        io.to(`user_${order.userId}`).emit('order_delivered', payload);
       }
     }
 
@@ -631,31 +806,22 @@ exports.confirmDeliveryOTP = async (req, res) => {
     }
     await order.save();
 
-    let partner = await DeliveryPartner.findOne({ userId: req.user._id });
-    if (!partner && order.deliveryPartnerId) {
-      partner = await DeliveryPartner.findById(order.deliveryPartnerId);
-    }
-    if (partner) {
-      partner.activeOrderId = null;
-      partner.isAvailable = true;
-      partner.totalDeliveries = (partner.totalDeliveries || 0) + 1;
-      partner.earnings = (partner.earnings || 0) + (order.riderPayout || order.deliveryFee || 30);
-      await partner.save();
-    }
+    // Credit delivery fee to partner's earnings and wallet
+    await creditRiderDeliveryFee(order.deliveryPartnerId || req.user._id, order);
 
     const io = req.app.get('io');
     if (io) {
-      io.to(`user_${order.userId}`).emit('order_delivered', {
-        orderId: order._id,
-        orderNumber: order.orderNumber,
-        message: 'Your order has been delivered successfully!'
-      });
-      io.to(`user_${order.userId}`).emit('order_status_update', {
+      const payload = {
         orderId: order._id,
         orderNumber: order.orderNumber,
         status: 'delivered',
         message: 'Your order has been delivered successfully!'
-      });
+      };
+      io.to(`order_${order._id}`).emit('delivery_status_update', payload);
+      io.to(`order_${order._id}`).emit('order_status_update', payload);
+      io.to(`user_${order.userId}`).emit('order_delivered', payload);
+      io.to(`user_${order.userId}`).emit('order_status_update', payload);
+      io.to(`user_${order.userId}`).emit('delivery_status_update', payload);
     }
 
     res.json({ success: true, message: 'Delivery OTP confirmed successfully', order });

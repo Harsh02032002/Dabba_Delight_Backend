@@ -38,6 +38,27 @@ try {
   console.error('QR Setup error:', e.message);
 }
 
+try {
+  const srcClient = path.resolve(__dirname, '../Dabba-Rider-App/node_modules/socket.io-client');
+  const destDir = path.resolve(__dirname, '../DabbaExpoApp/node_modules/socket.io-client');
+  const destFile = path.resolve(__dirname, '../DabbaExpoApp/src/services/socket.io.js');
+  if (fs.existsSync(srcClient)) {
+    if (!fs.existsSync(destDir)) {
+      fs.cpSync(srcClient, destDir, { recursive: true });
+      console.log('✅ Auto-copied socket.io-client to DabbaExpoApp/node_modules');
+    }
+    const distJs = path.join(srcClient, 'dist/socket.io.js');
+    if (fs.existsSync(distJs)) {
+      const servicesDir = path.dirname(destFile);
+      if (!fs.existsSync(servicesDir)) fs.mkdirSync(servicesDir, { recursive: true });
+      fs.copyFileSync(distJs, destFile);
+      console.log('✅ Auto-copied socket.io.js to DabbaExpoApp/src/services');
+    }
+  }
+} catch (e) {
+  console.error('Copy socket.io-client error:', e.message);
+}
+
 console.log('🔧 Loading environment from:', envPath);
 console.log('📁 .env file exists:', fs.existsSync(envPath));
 
@@ -147,55 +168,93 @@ app.use(compression({
 }));
 
 // ─── Socket.IO ──────────────────────────────────────
+// ─── Socket.IO Normalization (handle /api/socket.io & /socket.io) ────
+server.prependListener('request', (req, res) => {
+  if (req.url && req.url.startsWith('/api/socket.io')) {
+    req.url = req.url.replace('/api/socket.io', '/socket.io');
+  }
+});
+server.prependListener('upgrade', (req, socket, head) => {
+  if (req.url && req.url.startsWith('/api/socket.io')) {
+    req.url = req.url.replace('/api/socket.io', '/socket.io');
+  }
+});
+
+// ─── Socket.IO ──────────────────────────────────────
 const io = new Server(server, {
   cors: { 
-    origin: ['http://localhost:8081', 'http://localhost:8082', 'http://localhost:8080', 'http://localhost:5173','http://56.228.4.127', 'http://13.62.196.51'], 
-    methods: ['GET', 'POST'] 
+    origin: '*', 
+    methods: ['GET', 'POST'],
+    credentials: true,
   },
+  transports: ['websocket', 'polling'],
+  pingTimeout: 30000,
+  pingInterval: 25000,
 });
 
 // Socket authentication middleware (uses same JWT_SECRET as auth/partner login)
 const { getJwtSecret } = require('./utils/jwt');
+const { DeliveryPartner } = require('./models/Others');
+const Order = require('./models/Order');
+const User = require('./models/User');
+
 io.use(async (socket, next) => {
   try {
-    const token = socket.handshake.auth.token;
+    const token = socket.handshake.auth?.token || socket.handshake.query?.token;
     if (!token) {
-      console.log('❌ Socket auth: No token provided');
-      return next(new Error('Authentication error: No token provided'));
+      console.log('⚠️ Socket connected without token — guest mode');
+      socket.userRole = 'guest';
+      return next();
     }
 
-    console.log('🔐 Socket auth: Verifying token...');
     const jwt = require('jsonwebtoken');
     const decoded = jwt.verify(token, getJwtSecret());
-    
-    // Attach user info to socket
-    socket.userId = decoded.id;
-    socket.userEmail = decoded.email;
+    socket.userId = (decoded.id || decoded._id || '').toString();
+    socket.userEmail = decoded.email || '';
     socket.userRole = decoded.role;
-    
-    console.log(`✅ Socket authenticated: ${socket.userEmail} (${socket.userRole})`);
+
+    // If role missing in token, fetch from DB
+    if (!socket.userRole && socket.userId) {
+      const u = await User.findById(socket.userId).select('role email').lean();
+      if (u) {
+        socket.userRole = u.role || 'user';
+        socket.userEmail = socket.userEmail || u.email;
+      } else {
+        socket.userRole = 'user';
+      }
+    }
+
+    console.log(`✅ Socket authenticated: ${socket.userEmail || socket.userId} (${socket.userRole})`);
     next();
   } catch (err) {
-    console.error('❌ Socket authentication error:', err.message);
-    console.log('🔑 Token being verified:', socket.handshake.auth.token?.substring(0, 20) + '...');
-    
-    // Don't block connection entirely, just mark as unauthenticated
-    socket.authenticated = false;
+    console.error('⚠️ Socket auth token invalid, continuing as guest:', err.message);
     socket.authError = err.message;
+    socket.userRole = 'guest';
     next();
   }
 });
 
-io.on('connection', (socket) => {
-  // Check if authentication was successful
-  if (socket.authError) {
-    console.log(`❌ Socket ${socket.id} connected but not authenticated: ${socket.authError}`);
-    // Allow connection but limit functionality
-    socket.emit('auth_error', { message: socket.authError });
-    return;
-  }
+io.on('connection', async (socket) => {
+  console.log(`✅ Socket connected: ${socket.id} | User: ${socket.userId || 'guest'} | Role: ${socket.userRole}`);
 
-  console.log('✅ Socket connected:', socket.id, 'User:', socket.userEmail, 'Role:', socket.userRole);
+  // Auto-join personal rooms
+  if (socket.userId) {
+    socket.join(`user_${socket.userId}`);
+    socket.join(`partner_${socket.userId}`);
+    socket.join(`delivery_partner_${socket.userId}`);
+
+    // If partner, also join by DeliveryPartner _id
+    if (socket.userRole === 'delivery') {
+      try {
+        const dp = await DeliveryPartner.findOne({ userId: socket.userId });
+        if (dp) {
+          socket.deliveryPartnerId = dp._id.toString();
+          socket.join(`delivery_partner_${dp._id}`);
+          socket.join(`partner_${dp._id}`);
+        }
+      } catch (e) {}
+    }
+  }
 
   socket.on('join_room', (room) => {
     socket.join(room);
@@ -207,114 +266,230 @@ io.on('connection', (socket) => {
     console.log(`📱 Socket ${socket.id} left room: ${room}`);
   });
 
-  // Delivery partner specific events (only for authenticated users)
-  if (socket.userRole === 'delivery') {
-    socket.on('partnerOnline', () => {
-      console.log(`🛵 Partner ${socket.userEmail} went online`);
-      socket.broadcast.emit('partnerStatusUpdate', { 
-        partnerId: socket.userId, 
-        status: 'online',
-        email: socket.userEmail
-      });
+  // ─── Delivery Partner Events ──────────────────────────
+  socket.on('partnerOnline', async () => {
+    console.log(`🛵 Partner went online: ${socket.userId}`);
+    if (socket.userId) {
+      await DeliveryPartner.findOneAndUpdate({ userId: socket.userId }, { isOnline: true, isAvailable: true }).catch(() => {});
+    }
+    socket.broadcast.emit('partnerStatusUpdate', { 
+      partnerId: socket.userId, 
+      status: 'online',
     });
+  });
 
-    socket.on('partnerOffline', () => {
-      console.log(`🛵 Partner ${socket.userEmail} went offline`);
-      socket.broadcast.emit('partnerStatusUpdate', { 
-        partnerId: socket.userId, 
-        status: 'offline',
-        email: socket.userEmail
-      });
+  socket.on('partnerOffline', async () => {
+    console.log(`🛵 Partner went offline: ${socket.userId}`);
+    if (socket.userId) {
+      await DeliveryPartner.findOneAndUpdate({ userId: socket.userId }, { isOnline: false, isAvailable: false }).catch(() => {});
+    }
+    socket.broadcast.emit('partnerStatusUpdate', { 
+      partnerId: socket.userId, 
+      status: 'offline',
     });
+  });
 
-    socket.on('locationUpdate', (data) => {
-      console.log(`📍 Location update from ${socket.userEmail}:`, data);
-      // Broadcast to all clients (user app listens for delivery_location_update)
-      socket.broadcast.emit('partnerLocationUpdate', {
-        partnerId: socket.userId,
-        partnerEmail: socket.userEmail,
-        location: data,
-        timestamp: new Date()
-      });
-      // Also emit delivery_location_update so user can track rider on map
-      socket.broadcast.emit('delivery_location_update', {
-        partnerId: socket.userId,
-        lat: data.lat,
-        lng: data.lng,
-        timestamp: new Date()
-      });
+  // Rider sends GPS location
+  socket.on('locationUpdate', async (data) => {
+    const lat = Number(data?.lat ?? data?.latitude);
+    const lng = Number(data?.lng ?? data?.longitude);
+    const orderId = data?.orderId;
+
+    if (!isNaN(lat) && !isNaN(lng) && socket.userId) {
+      try {
+        const partner = await DeliveryPartner.findOneAndUpdate(
+          { userId: socket.userId },
+          { 
+            $set: { 
+              'currentLocation.type': 'Point',
+              'currentLocation.coordinates': [lng, lat]
+            } 
+          },
+          { new: true }
+        );
+
+        const targetOrderId = orderId || partner?.activeOrderId;
+        if (targetOrderId) {
+          const payload = {
+            orderId: targetOrderId,
+            partnerId: partner?._id || socket.userId,
+            lat,
+            lng,
+            timestamp: new Date()
+          };
+          // Broadcast to order room
+          io.to(`order_${targetOrderId}`).emit('delivery_location_update', payload);
+
+          // Also emit directly to the customer of this order
+          const ord = await Order.findById(targetOrderId).select('userId');
+          if (ord && ord.userId) {
+            io.to(`user_${ord.userId}`).emit('delivery_location_update', payload);
+          }
+        }
+      } catch (err) {
+        console.error('Error in locationUpdate handler:', err.message);
+      }
+    }
+
+    // Broadcast generic partner update
+    socket.broadcast.emit('partnerLocationUpdate', {
+      partnerId: socket.userId,
+      lat,
+      lng,
+      timestamp: new Date()
     });
+  });
 
-    // Join partner-specific room for targeted updates
-    socket.join(`partner_${socket.userId}`);
-    console.log(`📱 Partner ${socket.userEmail} joined room: partner_${socket.userId}`);
-  }
+  // Rider updates order status
+  socket.on('orderStatusUpdate', async (data) => {
+    const { orderId, status } = data || {};
+    if (orderId && status) {
+      console.log(`📦 orderStatusUpdate: Order ${orderId} -> ${status}`);
+      try {
+        const ord = await Order.findById(orderId);
+        if (ord) {
+          if (status === 'delivered' && ord.status !== 'delivered') {
+            ord.status = 'delivered';
+            ord.actualDelivery = new Date();
+            if (ord.paymentMethod === 'cod') ord.paymentStatus = 'paid';
+            await ord.save();
 
-  // User specific events (only for authenticated users)
-  if (socket.userRole === 'user') {
-    socket.on('userOnline', () => {
-      console.log(`👤 User ${socket.userEmail} went online`);
-      socket.broadcast.emit('userStatusUpdate', { 
-        userId: socket.userId, 
-        status: 'online',
-        email: socket.userEmail
+            // Credit delivery fee to partner
+            const partnerId = ord.deliveryPartnerId || socket.deliveryPartnerId || socket.userId;
+            if (partnerId) {
+              const { DeliveryPartner, WalletTransaction } = require('./models/Others');
+              let partner = await DeliveryPartner.findOne({ userId: partnerId });
+              if (!partner) partner = await DeliveryPartner.findById(partnerId);
+              if (partner) {
+                const riderFee = Number(ord.deliveryFee || ord.riderPayout || 30);
+                partner.activeOrderId = null;
+                partner.isAvailable = true;
+                partner.totalDeliveries = (partner.totalDeliveries || 0) + 1;
+                partner.todayDeliveries = (partner.todayDeliveries || 0) + 1;
+                partner.earnings = Number(((partner.earnings || 0) + riderFee).toFixed(2));
+                partner.todayEarnings = Number(((partner.todayEarnings || 0) + riderFee).toFixed(2));
+                partner.weekEarnings = Number(((partner.weekEarnings || 0) + riderFee).toFixed(2));
+                partner.wallet = Number(((partner.wallet || 0) + riderFee).toFixed(2));
+                await partner.save();
+
+                await WalletTransaction.create({
+                  deliveryPartnerId: partner._id,
+                  userId: partner.userId,
+                  type: 'credit',
+                  amount: riderFee,
+                  description: `Delivery payout for Order #${ord.orderNumber || ord._id}`,
+                  referenceType: 'delivery_payout',
+                  balance: partner.wallet,
+                }).catch(() => {});
+                console.log(`💰 Credited ₹${riderFee} to rider ${partner.name} via socket orderStatusUpdate`);
+              }
+            }
+          }
+
+          const updatePayload = {
+            orderId,
+            status,
+            orderNumber: ord.orderNumber,
+            timestamp: new Date(),
+          };
+          io.to(`order_${orderId}`).emit('delivery_status_update', updatePayload);
+          io.to(`order_${orderId}`).emit('order_status_update', updatePayload);
+          io.to(`user_${ord.userId}`).emit('delivery_status_update', updatePayload);
+          io.to(`user_${ord.userId}`).emit('order_status_update', updatePayload);
+          if (status === 'delivered') {
+            io.to(`user_${ord.userId}`).emit('order_delivered', updatePayload);
+          }
+        }
+      } catch (e) {
+        console.error('Error in socket orderStatusUpdate:', e);
+      }
+    }
+  });
+
+  // ─── Customer Live Tracking Events ────────────────────
+  socket.on('trackOrder', async (data) => {
+    const orderId = data?.orderId;
+    if (!orderId) return;
+
+    try {
+      const order = await Order.findById(orderId)
+        .populate('sellerId', 'businessName address phone')
+        .populate('deliveryPartnerId', 'name phone vehicleType currentLocation rating');
+
+      if (!order) {
+        return socket.emit('track_order_error', { message: 'Order not found' });
+      }
+
+      // Authorization check (Requirement 9: user can only track their own order)
+      if (
+        socket.userId &&
+        order.userId &&
+        socket.userRole === 'user' &&
+        order.userId.toString() !== socket.userId.toString()
+      ) {
+        return socket.emit('track_order_error', { message: 'Unauthorized to track this order' });
+      }
+
+      socket.join(`order_${orderId}`);
+      console.log(`📱 Socket ${socket.id} joined order tracking room: order_${orderId}`);
+
+      // Immediately send current tracking coordinates
+      let riderLocation = null;
+      let riderInfo = null;
+
+      if (order.deliveryPartnerId) {
+        const dp = order.deliveryPartnerId;
+        if (dp.currentLocation?.coordinates && Array.isArray(dp.currentLocation.coordinates) && dp.currentLocation.coordinates.length === 2) {
+          riderLocation = {
+            lat: dp.currentLocation.coordinates[1],
+            lng: dp.currentLocation.coordinates[0],
+          };
+        }
+        riderInfo = {
+          name: dp.name || 'Delivery Partner',
+          phone: dp.phone,
+          vehicleType: dp.vehicleType || 'bike',
+          rating: dp.rating || 5.0,
+        };
+      }
+
+      const pickupCoords = order.pickupLocation?.coordinates || order.sellerId?.address?.location?.coordinates || [77.2090, 28.6139];
+      const dropCoords = order.dropLocation?.coordinates || order.deliveryAddress?.location?.coordinates || [77.2190, 28.6229];
+
+      socket.emit('track_order_init', {
+        orderId: order._id,
+        orderNumber: order.orderNumber,
+        status: order.status,
+        restaurantName: order.sellerId?.businessName || 'Restaurant',
+        pickupCoords: { lat: pickupCoords[1], lng: pickupCoords[0] },
+        dropCoords: { lat: dropCoords[1], lng: dropCoords[0] },
+        riderLocation,
+        riderInfo,
       });
-    });
+    } catch (err) {
+      console.error('Error handling trackOrder:', err.message);
+    }
+  });
 
-    socket.on('userOffline', () => {
-      console.log(`👤 User ${socket.userEmail} went offline`);
-      socket.broadcast.emit('userStatusUpdate', { 
-        userId: socket.userId, 
-        status: 'offline',
-        email: socket.userEmail
-      });
-    });
-
-    socket.on('userLocationUpdate', (data) => {
-      console.log(`📍 User location update from ${socket.userEmail}:`, data);
-      socket.broadcast.emit('userLocationUpdate', {
-        userId: socket.userId,
-        userEmail: socket.userEmail,
-        location: data,
-        timestamp: new Date()
-      });
-    });
-
-    socket.on('trackOrder', (data) => {
-      console.log(`📦 User ${socket.userEmail} tracking order:`, data.orderId);
-      socket.join(`order_${data.orderId}`);
-      console.log(`📱 User ${socket.userEmail} joined order room: order_${data.orderId}`);
-    });
-
-    // Join user-specific room for targeted updates
-    socket.join(`user_${socket.userId}`);
-    console.log(`📱 User ${socket.userEmail} joined room: user_${socket.userId}`);
-  }
+  socket.on('untrackOrder', (data) => {
+    if (data?.orderId) {
+      socket.leave(`order_${data.orderId}`);
+      console.log(`📱 Socket ${socket.id} left order tracking room: order_${data.orderId}`);
+    }
+  });
 
   socket.on('disconnect', (reason) => {
-    console.log('❌ Socket disconnected:', socket.id, 'User:', socket.userEmail, 'Reason:', reason);
-    
-    // Notify others about disconnection
-    if (socket.userRole === 'delivery') {
+    console.log(`❌ Socket disconnected: ${socket.id} (User: ${socket.userId || 'guest'}) | Reason: ${reason}`);
+    if (socket.userId && socket.userRole === 'delivery') {
       socket.broadcast.emit('partnerStatusUpdate', { 
         partnerId: socket.userId, 
         status: 'offline',
-        email: socket.userEmail,
-        reason: reason
-      });
-    } else if (socket.userRole === 'user') {
-      socket.broadcast.emit('userStatusUpdate', { 
-        userId: socket.userId, 
-        status: 'offline',
-        email: socket.userEmail,
-        reason: reason
       });
     }
   });
 
-  // Handle connection errors
-  socket.on('error', (error) => {
-    console.error(`❌ Socket error for ${socket.id}:`, error);
+  socket.on('error', (err) => {
+    console.error(`❌ Socket error (${socket.id}):`, err);
   });
 });
 
@@ -322,50 +497,18 @@ io.on('connection', (socket) => {
 app.set('io', io);
 
 // ─── Middleware ──────────────────────────────────────
-// Enable compression for CORS preflight
+// Enable flexible CORS for local development and production
 app.use(cors({ 
-  origin: [
-    "http://localhost:8081", 
-    "http://localhost:8082", 
-    "http://localhost:8080", 
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "http://13.62.196.51",
-    "http://56.228.4.127",
-    "https://dabbanation.in",
-    "https://www.dabbanation.in",
-    "exp://localhost:19000",
-    "exp://localhost:19001",
-    "exp://localhost:19002",
-    "http://localhost:19006",
-    "http://localhost:19007",
-  ], 
+  origin: true,
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  allowedHeaders: ["Content-Type", "Authorization", "x-requested-with", "x-user-id"],
 }));
 
 // Handle preflight requests explicitly
 app.options("*", cors({
-  origin: [
-    "http://localhost:8081",
-    "http://localhost:8082",
-    "http://localhost:8080",
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "http://13.62.196.51",
-    "http://56.228.4.127",
-    "https://dabbanation.in",
-    "https://www.dabbanation.in",
-    "exp://localhost:19000",
-    "exp://localhost:19001",
-    "exp://localhost:19002",
-    "http://localhost:19006",
-    "http://localhost:19007",
-  ],
+  origin: true,
   credentials: true,
-  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
 }));
 
 // ─── PUBLIC ROUTES (Must be before other routes) ─────
