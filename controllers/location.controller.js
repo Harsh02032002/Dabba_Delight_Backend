@@ -1,5 +1,6 @@
 const { Address } = require('../models/Others');
 const Seller = require('../models/Seller');
+const { findNearbySellers, clampRadiusKm } = require('../utils/sellerGeo');
 
 // POST /api/user/address
 exports.addAddress = async (req, res) => {
@@ -67,49 +68,26 @@ exports.setDefaultAddress = async (req, res) => {
 };
 
 // GET /api/user/sellers/nearby
+// Location-wise sellers: only sellers whose *effective* location is within `radius`
+// metres of the user. Effective location = seller GPS pin, corrected to the declared
+// city centre when the pin clearly contradicts the city (see utils/sellerGeo.js).
 exports.getNearbySellers = async (req, res) => {
   try {
-    const { lat, lng, radius = 50000, type, city, locationName } = req.query;
-    const filter = { isActive: true };
-    if (type) {
-      filter.type = (type === 'home_chef' || type === 'home-chef')
-        ? { $in: ['home_chef', 'home-chef'] }
-        : type;
-    }
+    const { lat, lng, radius, type, city, locationName } = req.query;
+    const radiusKm = clampRadiusKm(radius); // hard max: SERVICE_RADIUS_KM (12 km)
+    const hasUserCoords = !!(lat && lng);
 
-    let sellers = [];
-    if (lat && lng) {
-      const geoFilter = {
-        ...filter,
-        'address.location': {
-          $near: {
-            $geometry: { type: 'Point', coordinates: [Number(lng), Number(lat)] },
-            $maxDistance: Number(radius) || 50000,
-          },
-        },
-      };
-      try {
-        sellers = await Seller.find(geoFilter).limit(50).lean();
-      } catch (geoErr) {
-        console.log('[getNearbySellers] $near query info:', geoErr.message);
-      }
-    }
-
-    // Fallback: If $near returned 0 or if city/location query passed
-    const searchCity = city || locationName;
-    if ((!sellers || sellers.length === 0) && (searchCity || (lat && lng))) {
-      const cityFilter = { ...filter };
-      if (searchCity) {
-        const cityName = String(searchCity).split(',')[0].trim();
-        cityFilter.$or = [
-          { 'address.city': { $regex: cityName, $options: 'i' } },
-          { 'address.state': { $regex: cityName, $options: 'i' } },
-          { 'address.fullAddress': { $regex: cityName, $options: 'i' } },
-          { businessName: { $regex: cityName, $options: 'i' } },
-        ];
-      }
-      sellers = await Seller.find(cityFilter).limit(50).lean();
-    }
+    // NOTE: intentionally no "show everything" fallback - if nothing is nearby the app
+    // shows an empty state instead of sellers from another city.
+    const sellers = await findNearbySellers({
+      lat,
+      lng,
+      radiusMeters: radius,
+      type,
+      areaName: city || locationName,
+      limit: 50,
+    });
+    const userPoint = [lng, lat];
 
     // Default images
     const DEFAULT_LOGO = 'https://images.unsplash.com/photo-1544025162-d76694265947?w=400&h=400&fit=crop';
@@ -122,7 +100,7 @@ exports.getNearbySellers = async (req, res) => {
       image: seller.coverImage || DEFAULT_COVER,
     }));
 
-    console.log('[getNearbySellers] returning:', sellersWithImages.length, 'sellers');
+    console.log(`[getNearbySellers] user=${hasUserCoords ? userPoint.join(',') : 'n/a'} area="${city || locationName || ''}" radiusKm=${radiusKm} -> ${sellersWithImages.length} sellers`);
     res.json({ success: true, sellers: sellersWithImages, total: sellersWithImages.length });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

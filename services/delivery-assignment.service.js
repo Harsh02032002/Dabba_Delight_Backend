@@ -2,10 +2,20 @@ const Order = require('../models/Order');
 const DeliveryPartner = require('../models/Others').DeliveryPartner;
 const Seller = require('../models/Seller');
 const { Notification } = require('../models/Others');
+const { SERVICE_RADIUS_KM, haversineKm, isValidCoords, getEffectiveSellerCoords } = require('../utils/sellerGeo');
+
+/** Normalise a partner's currentLocation into [lng, lat] or null */
+const getPartnerPoint = (partner) => {
+  const c = partner?.currentLocation?.coordinates;
+  if (!c) return null;
+  const pt = Array.isArray(c) ? [Number(c[0]), Number(c[1])] : (c.lng != null && c.lat != null ? [Number(c.lng), Number(c.lat)] : null);
+  return pt && isValidCoords(pt) ? pt : null;
+};
 
 /**
  * Step 3: Find Nearest Delivery Boy
- * Algorithm: Find riders within 3km radius, sort by distance
+ * Rule: only riders within SERVICE_RADIUS_KM (12 km) of the CUSTOMER's delivery
+ * location, sorted by distance. No "send to everyone" fallback.
  */
 const findNearestDeliveryPartners = async (orderId) => {
   try {
@@ -29,129 +39,70 @@ const findNearestDeliveryPartners = async (orderId) => {
       orderStatus: order.status
     });
 
-    // Get restaurant location
-    const restaurantLocation = order.sellerId?.address?.location;
-    console.log('🏪 Full seller data:', JSON.stringify(order.sellerId, null, 2));
-    console.log('🏪 Seller address:', order.sellerId?.address);
-    console.log('🏪 Seller location:', restaurantLocation);
-    
-    if (!restaurantLocation || !restaurantLocation.coordinates) {
-      console.log('❌ ERROR: Restaurant location not available');
-      console.log('- Seller ID:', order.sellerId?._id);
-      console.log('- Seller name:', order.sellerId?.businessName);
-      console.log('- Address:', order.sellerId?.address);
-      throw new Error('Restaurant location not available');
+    // Restaurant (pickup) location - pin corrected against declared city if needed
+    const sellerDoc = order.sellerId?.toObject ? order.sellerId.toObject() : order.sellerId;
+    const { coords: sellerPoint } = getEffectiveSellerCoords(sellerDoc || {});
+    const restaurantLocation = sellerPoint ? { type: 'Point', coordinates: sellerPoint } : null;
+
+    // Customer (drop) location - this is what the 12 km rider rule is based on
+    const rawDrop = order.deliveryAddress?.location?.coordinates;
+    const dropPoint = Array.isArray(rawDrop) && isValidCoords([Number(rawDrop[0]), Number(rawDrop[1])])
+      ? [Number(rawDrop[0]), Number(rawDrop[1])]
+      : null;
+    // If the order has no drop coords, the seller is already within 12 km of the
+    // customer (enforced at order placement), so use the pickup point as reference.
+    const referencePoint = dropPoint || sellerPoint;
+
+    console.log(`🏪 Pickup: ${sellerPoint ? sellerPoint.join(',') : 'n/a'} | 🏠 Drop: ${dropPoint ? dropPoint.join(',') : 'n/a'} | radius ${SERVICE_RADIUS_KM} km`);
+
+    if (!referencePoint) {
+      console.log('❌ ERROR: Neither customer nor restaurant location available');
+      throw new Error('Delivery location not available');
     }
 
-    console.log(`� Restaurant location:`, restaurantLocation.coordinates);
-    console.log(`🏙️ Restaurant city: ${order.sellerId?.address?.city || 'unknown'}`);
-    
-    // First get all online delivery partners
-    console.log('🔍 Fetching all online delivery partners...');
+    // All online + free delivery partners
     const allOnlinePartners = await DeliveryPartner.find({
       isOnline: true,
       isAvailable: true,
-      currentLocation: { $exists: true }
+      currentLocation: { $exists: true },
     });
-    
+
     console.log(`👥 Found ${allOnlinePartners.length} online partners`);
     if (allOnlinePartners.length === 0) {
-      console.log('❌ ERROR: No online delivery partners found');
-      console.log('🔍 Checking all delivery partners...');
-      const allPartners = await DeliveryPartner.find({});
-      console.log(`📊 Total delivery partners in DB: ${allPartners.length}`);
-      allPartners.forEach(p => {
-        console.log(`- ${p.name}: online=${p.isOnline}, available=${p.isAvailable}, location=${!!p.currentLocation}`);
-      });
       return { success: false, message: 'No online delivery partners available' };
     }
-    
-    console.log(`📍 Partner locations:`, allOnlinePartners.map(p => ({
-      name: p.name,
-      location: p.currentLocation,
-      coordinates: p.currentLocation?.coordinates,
-      city: p.city,
-      online: p.isOnline,
-      available: p.isAvailable
-    })));
-    
-    console.log(`👥 All online partners:`, allOnlinePartners.length);
-    console.log(`📍 Partner locations:`, allOnlinePartners.map(p => ({
-      name: p.name,
-      location: p.currentLocation,
-      city: p.city
-    })));
-    
-    // Then filter by distance
+
+    // Keep only riders within SERVICE_RADIUS_KM of the customer, nearest first
     const nearbyPartners = [];
     for (const partner of allOnlinePartners) {
-      if (!partner.currentLocation || !partner.currentLocation.coordinates) {
-        console.log(`❌ Partner ${partner.name} has no location`);
+      const partnerPoint = getPartnerPoint(partner);
+      if (!partnerPoint) {
+        console.log(`❌ Partner ${partner.name} has no valid live location - skipped`);
         continue;
       }
-      
-      // Get coordinates properly
-      let partnerCoords;
-      if (Array.isArray(partner.currentLocation.coordinates)) {
-        partnerCoords = partner.currentLocation.coordinates;
-      } else if (partner.currentLocation.coordinates.lng && partner.currentLocation.coordinates.lat) {
-        partnerCoords = [partner.currentLocation.coordinates.lng, partner.currentLocation.coordinates.lat];
-      } else {
-        console.log(`❌ Partner ${partner.name} has invalid coordinates format:`, partner.currentLocation.coordinates);
-        continue;
-      }
-      
-      console.log(`📍 Partner ${partner.name} coordinates:`, partnerCoords);
-      console.log(`🏪 Restaurant coordinates:`, restaurantLocation.coordinates);
-      console.log(`🔍 Coordinate comparison:`);
-      console.log(`  - Partner lng: ${partnerCoords[0]}, Restaurant lng: ${restaurantLocation.coordinates[0]}`);
-      console.log(`  - Partner lat: ${partnerCoords[1]}, Restaurant lat: ${restaurantLocation.coordinates[1]}`);
-      console.log(`  - Same lng: ${partnerCoords[0] === restaurantLocation.coordinates[0]}`);
-      console.log(`  - Same lat: ${partnerCoords[1] === restaurantLocation.coordinates[1]}`);
-      
-      const distance = calculateDistance(
-        restaurantLocation.coordinates,
-        partnerCoords
-      );
-      
-      console.log(`📏 Distance from ${partner.name}: ${distance}km`);
-      console.log(`🏙️ Partner city: ${partner.city}, Restaurant city: ${order.sellerId?.address?.city}`);
-      console.log(`🤝 City match: ${partner.city === order.sellerId?.address?.city || !partner.city}`);
-      
-      const distNum = parseFloat(distance);
-      if (distNum <= 25 || (partner.city && order.sellerId?.address?.city && partner.city.toLowerCase() === order.sellerId.address.city.toLowerCase())) {
+      const distNum = haversineKm(referencePoint, partnerPoint);
+      if (distNum <= SERVICE_RADIUS_KM) {
+        partner._distanceKm = distNum;
         nearbyPartners.push(partner);
-        console.log(`✅ Partner ${partner.name} is within delivery zone (${distNum}km) - ADDED TO LIST`);
+        console.log(`✅ Partner ${partner.name} is ${distNum.toFixed(2)} km from customer - eligible`);
       } else {
-        console.log(`❌ Partner ${partner.name} rejected - Distance: ${distNum}km`);
+        console.log(`❌ Partner ${partner.name} is ${distNum.toFixed(2)} km away (> ${SERVICE_RADIUS_KM} km) - rejected`);
       }
     }
-    
-    // Fallback: If no partner found within 25km, include all online partners so order is not stuck
-    if (nearbyPartners.length === 0 && allOnlinePartners.length > 0) {
-      console.log('⚠️ Fallback: Including all online available partners so order is assigned');
-      nearbyPartners.push(...allOnlinePartners);
-    }
+    nearbyPartners.sort((a, b) => a._distanceKm - b._distanceKm);
 
-    console.log(`📍 Found ${nearbyPartners.length} nearby delivery partners`);
-    console.log(`👥 Available partners:`, nearbyPartners.map(p => ({
-      name: p.name,
-      city: p.city,
-      online: p.isOnline,
-      available: p.isAvailable,
-      location: p.currentLocation?.coordinates
-    })));
-    
+    console.log(`📍 Found ${nearbyPartners.length} delivery partners within ${SERVICE_RADIUS_KM} km`);
+
     if (nearbyPartners.length === 0) {
-      console.log('❌ ERROR: No nearby delivery partners found');
-      return { success: false, message: 'No nearby delivery partners found' };
+      console.log(`❌ No delivery partner within ${SERVICE_RADIUS_KM} km of the customer`);
+      return { success: false, message: `No delivery partners within ${SERVICE_RADIUS_KM} km` };
     }
     
     return {
       success: true,
       partners: nearbyPartners,
-      restaurantLocation: restaurantLocation.coordinates,
-      customerLocation: order.deliveryAddress?.location?.coordinates
+      restaurantLocation: restaurantLocation?.coordinates || null,
+      customerLocation: dropPoint
     };
 
   } catch (error) {
@@ -236,10 +187,7 @@ const sendOrderToRiders = async (orderId, io) => {
               customerName: order.userId.name,
               totalAmount: order.total,
               estimatedTime: '25-30 mins',
-              distance: calculateDistance(
-                partner.currentLocation.coordinates,
-                order.sellerId.address.location.coordinates
-              ),
+              distance: Number.isFinite(partner._distanceKm) ? partner._distanceKm.toFixed(2) : null,
             }
           });
           console.log(`✅ Notification created successfully for partner ${partner.name}`);
@@ -250,10 +198,8 @@ const sendOrderToRiders = async (orderId, io) => {
           throw notifError; // Re-throw to see the full error
         }
         
-        const calculatedDistance = calculateDistance(
-          partner.currentLocation.coordinates,
-          order.sellerId?.address?.location?.coordinates || [0, 0]
-        );
+        // Distance rider -> customer (already computed by the 12 km filter)
+        const calculatedDistance = Number.isFinite(partner._distanceKm) ? partner._distanceKm.toFixed(2) : null;
 
         const requestPayload = {
           orderId: orderId,

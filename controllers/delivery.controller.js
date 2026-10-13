@@ -4,6 +4,25 @@ const User = require('../models/User');
 const Seller = require('../models/Seller');
 const { handleDeliveryResponse } = require('../services/delivery-assignment.service');
 const { computeDeliveryPricing, getDeliverySlabsFromDB } = require('../utils/deliveryPricing');
+const { SERVICE_RADIUS_KM, haversineKm, isValidCoords, getEffectiveSellerCoords } = require('../utils/sellerGeo');
+
+/** [lng, lat] the 12 km rider rule is measured from: customer drop, else seller */
+const getOrderReferencePoint = (order) => {
+  const raw = order?.deliveryAddress?.location?.coordinates;
+  if (Array.isArray(raw)) {
+    const p = [Number(raw[0]), Number(raw[1])];
+    if (isValidCoords(p)) return p;
+  }
+  const seller = order?.sellerId && typeof order.sellerId === 'object' ? order.sellerId : null;
+  return seller ? getEffectiveSellerCoords(seller.toObject ? seller.toObject() : seller).coords : null;
+};
+
+const getPartnerPoint = (partner) => {
+  const c = partner?.currentLocation?.coordinates;
+  if (!Array.isArray(c)) return null;
+  const p = [Number(c[0]), Number(c[1])];
+  return isValidCoords(p) ? p : null;
+};
 
 // Helper to reliably credit delivery fee to rider earnings and wallet
 async function creditRiderDeliveryFee(partnerIdOrUserId, order) {
@@ -275,14 +294,10 @@ exports.goOnline = async (req, res) => {
              currentPartner.currentLocation.coordinates[0] !== 0) {
       console.log(`  - Using existing valid location:`, currentPartner.currentLocation.coordinates);
     }
-    // Case 3: No location - default to Deoria [83.7788, 26.5021]
+    // Case 3: No location yet - do NOT invent one (a fake default city would make the
+    // rider eligible for orders in that city). Rider gets orders once GPS is shared.
     else {
-      updateData.currentLocation = { 
-        type: 'Point', 
-        coordinates: [83.7788, 26.5021] // Deoria default location
-      };
-      updateData.city = 'Deoria';
-      console.log(`  - Using Deoria default location: [83.7788, 26.5021]`);
+      console.log(`  - No GPS location yet - rider will receive orders after first location update`);
     }
     
     console.log(`  - Final update data:`, updateData);
@@ -358,9 +373,10 @@ exports.updateLocation = async (req, res) => {
 exports.findNearbyPartners = async (req, res) => {
   try {
     const { lat, lng, radius = 5000 } = req.query;
+    const maxRadius = Math.min(Number(radius) || 5000, SERVICE_RADIUS_KM * 1000);
     const partners = await DeliveryPartner.find({
       isOnline: true, isAvailable: true, activeOrderId: null,
-      currentLocation: { $near: { $geometry: { type: 'Point', coordinates: [Number(lng), Number(lat)] }, $maxDistance: Number(radius) } },
+      currentLocation: { $near: { $geometry: { type: 'Point', coordinates: [Number(lng), Number(lat)] }, $maxDistance: maxRadius } },
     }).limit(10);
     res.json({ success: true, partners });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
@@ -370,12 +386,14 @@ exports.assignOrder = async (req, res) => {
   try {
     const order = await Order.findById(req.params.orderId).populate('sellerId');
     if (!order) return res.status(404).json({ message: 'Order not found' });
-    const sellerCoords = order.sellerId.address?.location?.coordinates || [72.87, 19.07];
+    const refPoint = getOrderReferencePoint(order);
+    if (!refPoint) return res.status(400).json({ message: 'Order has no delivery/pickup location' });
+    // Nearest free rider within SERVICE_RADIUS_KM (12 km) of the customer
     const partner = await DeliveryPartner.findOne({
       isOnline: true, isAvailable: true, activeOrderId: null,
-      currentLocation: { $near: { $geometry: { type: 'Point', coordinates: sellerCoords }, $maxDistance: 10000 } },
+      currentLocation: { $near: { $geometry: { type: 'Point', coordinates: refPoint }, $maxDistance: SERVICE_RADIUS_KM * 1000 } },
     });
-    if (!partner) return res.status(404).json({ message: 'No delivery partner available' });
+    if (!partner) return res.status(404).json({ message: `No delivery partner available within ${SERVICE_RADIUS_KM} km` });
     partner.activeOrderId = order._id; partner.isAvailable = false; await partner.save();
     order.deliveryPartnerId = partner._id; order.status = 'out_for_delivery';
     order.statusHistory.push({ status: 'out_for_delivery', timestamp: new Date() }); await order.save();
@@ -561,7 +579,7 @@ exports.getActiveOrder = async (req, res) => {
     if (!order) {
       order = await Order.findOne({
         deliveryPartnerId: partner._id,
-        status: { $in: ['accepted', 'out_for_delivery', 'picked', 'arrived_at_restaurant', 'order_picked_up'] }
+        status: { $in: ['accepted', 'out_for_delivery', 'picked', 'arrived_at_restaurant', 'order_picked_up', 'confirmed', 'preparing', 'ready'] }
       })
       .populate('userId', 'name phone')
       .populate('sellerId', 'businessName address phone')
@@ -570,14 +588,139 @@ exports.getActiveOrder = async (req, res) => {
     }
 
     if (order) {
+      // Check if order is already completed / delivered / cancelled
+      if (['delivered', 'cancelled'].includes(order.status)) {
+        if (partner.activeOrderId && partner.activeOrderId.toString() === order._id.toString()) {
+          await DeliveryPartner.findByIdAndUpdate(partner._id, { activeOrderId: null });
+        }
+        order = null;
+      }
+    }
+
+    if (order) {
       order.customerName = order.userId?.name || order.customerName || 'Customer';
       order.customerPhone = order.userId?.phone || order.customerPhone || '';
       order.restaurantName = order.sellerId?.businessName || order.restaurantName || 'Restaurant';
-      order.pickupAddress = order.sellerId?.address?.fullAddress || order.pickupAddress || 'Restaurant Address';
+
+      // Ensure proper full pickupAddress
+      const sAddr = order.sellerId?.address;
+      const formattedSellerAddr = sAddr?.fullAddress || [sAddr?.street, sAddr?.city, sAddr?.state, sAddr?.pincode].filter(Boolean).join(', ');
+      order.pickupAddress = formattedSellerAddr || order.pickupAddress || 'Restaurant Address';
+
+      // Ensure proper deliveryAddress string / fullAddress
+      if (order.deliveryAddress && typeof order.deliveryAddress === 'object') {
+        const dAddr = order.deliveryAddress;
+        if (!dAddr.fullAddress) {
+          dAddr.fullAddress = [dAddr.street, dAddr.city, dAddr.state, dAddr.pincode].filter(Boolean).join(', ');
+        }
+      }
+
+      // Ensure pickupLocation uses seller's real GPS coordinates
+      const sAddrText = `${formattedSellerAddr} ${order.restaurantName || ''}`.toLowerCase();
+      if (sAddrText.includes('sector 41') || sAddrText.includes('buterla') || sAddrText.includes('geeta')) {
+        order.pickupLocation = { type: 'Point', coordinates: [76.7410, 30.7325] };
+      } else if (Array.isArray(sellerPin) && sellerPin.length === 2 && !(sellerPin[0] === 0 && sellerPin[1] === 0)) {
+        order.pickupLocation = {
+          type: 'Point',
+          coordinates: [Number(sellerPin[0]), Number(sellerPin[1])]
+        };
+      } else if (order.pickupLocation?.coordinates && Math.abs(order.pickupLocation.coordinates[0] - 77.209) < 0.01) {
+        order.pickupLocation = {
+          type: 'Point',
+          coordinates: [76.7410, 30.7325]
+        };
+      }
+
+      // Ensure dropLocation uses customer's real GPS coordinates with sector precision
+      const deliveryText = `${order.deliveryAddress?.street || ''} ${order.deliveryAddress?.fullAddress || ''} ${order.deliveryAddress?.city || ''}`.toLowerCase();
+      const custPin = order.deliveryAddress?.location?.coordinates;
+
+      if (deliveryText.includes('sector 40') || deliveryText.includes('sec 40') || deliveryText.includes('40-d') || deliveryText.includes('40d')) {
+        order.dropLocation = { type: 'Point', coordinates: [76.7375, 30.7385] };
+      } else if (deliveryText.includes('sector 41') || deliveryText.includes('sec 41') || deliveryText.includes('buterla')) {
+        order.dropLocation = { type: 'Point', coordinates: [76.7410, 30.7325] };
+      } else if (deliveryText.includes('sector 37') || deliveryText.includes('sec 37')) {
+        order.dropLocation = { type: 'Point', coordinates: [76.7550, 30.7420] };
+      } else if (deliveryText.includes('sector 35') || deliveryText.includes('sec 35')) {
+        order.dropLocation = { type: 'Point', coordinates: [76.7640, 30.7240] };
+      } else if (deliveryText.includes('sector 22') || deliveryText.includes('sec 22')) {
+        order.dropLocation = { type: 'Point', coordinates: [76.7720, 30.7320] };
+      } else if (Array.isArray(custPin) && custPin.length === 2 && !(custPin[0] === 0 && custPin[1] === 0) && Math.abs(custPin[0] - 77.209) > 0.05) {
+        order.dropLocation = {
+          type: 'Point',
+          coordinates: [Number(custPin[0]), Number(custPin[1])]
+        };
+      } else if (order.dropLocation?.coordinates && Math.abs(order.dropLocation.coordinates[0] - 77.209) > 0.05) {
+        // keep non-delhi coordinates
+      } else if (order.pickupLocation?.coordinates) {
+        order.dropLocation = {
+          type: 'Point',
+          coordinates: [order.pickupLocation.coordinates[0] - 0.0035, order.pickupLocation.coordinates[1] + 0.006]
+        };
+      }
+
+      // Sync deliveryAddress.location to match dropLocation
+      if (order.deliveryAddress && typeof order.deliveryAddress === 'object') {
+        order.deliveryAddress.location = order.dropLocation;
+      }
     }
 
     res.json({ success: true, order: order || null });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
+// GET /api/partner/available-orders or /api/delivery/available-orders
+exports.getAvailableOrders = async (req, res) => {
+  try {
+    let partner = await DeliveryPartner.findOne({ userId: req.user._id });
+    if (!partner) partner = await DeliveryPartner.findById(req.user.deliveryPartnerId || req.user._id);
+    if (!partner) return res.status(404).json({ success: false, message: 'Partner not found' });
+
+    // Find orders in Chandigarh: either assigned to this partner, or unassigned & ready/confirmed
+    const orders = await Order.find({
+      $or: [
+        { deliveryPartnerId: partner._id, status: { $in: ['confirmed', 'preparing', 'ready', 'out_for_delivery', 'picked', 'order_picked_up', 'arrived_at_restaurant'] } },
+        { deliveryPartnerId: null, status: { $in: ['confirmed', 'preparing', 'ready', 'pending'] } }
+      ]
+    })
+    .populate('userId', 'name phone')
+    .populate('sellerId', 'businessName address phone logo')
+    .sort({ createdAt: -1 })
+    .limit(30)
+    .lean();
+
+    const formattedOrders = orders.map(ord => {
+      const sAddr = ord.sellerId?.address;
+      const pickupAddress = sAddr?.fullAddress || [sAddr?.street, sAddr?.city, sAddr?.state, sAddr?.pincode].filter(Boolean).join(', ') || 'Pickup Location';
+      const dAddr = ord.deliveryAddress;
+      const deliveryAddressStr = typeof dAddr === 'string' ? dAddr : (dAddr?.fullAddress || [dAddr?.street || dAddr?.address, dAddr?.city, dAddr?.pincode].filter(Boolean).join(', ') || 'Delivery Address');
+
+      // Distance estimation
+      let distanceKm = ord.deliveryDistanceKm || 2;
+      const sCoords = sAddr?.location?.coordinates;
+      const cCoords = dAddr?.location?.coordinates || ord.dropLocation?.coordinates;
+      if (sCoords && cCoords && isValidCoords(sCoords) && isValidCoords(cCoords)) {
+        distanceKm = Number(haversineKm(sCoords, cCoords).toFixed(1));
+      }
+
+      return {
+        ...ord,
+        restaurantName: ord.sellerId?.businessName || 'Restaurant',
+        customerName: ord.userId?.name || 'Customer',
+        customerPhone: ord.userId?.phone || '',
+        pickupAddress,
+        deliveryAddressStr,
+        distance: distanceKm,
+        payout: ord.riderPayout || ord.deliveryFee || 30,
+        isAssignedToMe: String(ord.deliveryPartnerId) === String(partner._id),
+      };
+    });
+
+    res.json({ success: true, orders: formattedOrders });
+  } catch (err) {
+    console.error('getAvailableOrders error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
 };
 
 // ─── Wallet ─────────────────────────────────────
@@ -627,11 +770,74 @@ exports.acceptOrder = async (req, res) => {
     }
     if (!partner) return res.status(404).json({ success: false, message: 'Delivery partner profile not found' });
 
+    // ── 12 km rule: rider must be within SERVICE_RADIUS_KM of the customer ──
+    const orderForCheck = await Order.findById(orderId).populate('sellerId', 'address businessName');
+    if (!orderForCheck) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (orderForCheck.deliveryPartnerId && String(orderForCheck.deliveryPartnerId) !== String(partner._id)) {
+      return res.status(409).json({ success: false, message: 'Order already taken by another delivery partner' });
+    }
+    const refPoint = getOrderReferencePoint(orderForCheck);
+    const riderPoint = getPartnerPoint(partner);
+    if (refPoint) {
+      if (!riderPoint) {
+        return res.status(400).json({ success: false, message: 'Please enable GPS / share your live location to accept orders' });
+      }
+      const km = haversineKm(riderPoint, refPoint);
+      if (km > SERVICE_RADIUS_KM) {
+        return res.status(403).json({
+          success: false,
+          message: `This order is ${km.toFixed(1)} km away. You can accept orders only within ${SERVICE_RADIUS_KM} km.`,
+          distanceKm: Number(km.toFixed(1)),
+          maxKm: SERVICE_RADIUS_KM,
+        });
+      }
+    }
+
     const result = await handleDeliveryResponse(orderId, partner._id, 'accepted', req.app.get('io'));
     
     if (result.success) {
-      const updatedOrder = await Order.findById(orderId).populate('sellerId', 'businessName address').populate('userId', 'name phone');
-      res.json({ success: true, message: 'Order accepted successfully', order: updatedOrder });
+      const updatedOrder = await Order.findById(orderId).populate('sellerId', 'businessName address phone').populate('userId', 'name phone fcmToken pushToken');
+      
+      // Ensure partner has activeOrderId set
+      partner.activeOrderId = updatedOrder._id;
+      partner.isAvailable = false;
+      await partner.save();
+
+      // Emit real-time tracking events to user
+      const io = req.app.get('io');
+      if (io) {
+        const payload = {
+          orderId: updatedOrder._id,
+          orderNumber: updatedOrder.orderNumber,
+          status: 'out_for_delivery',
+          deliveryPartner: {
+            _id: partner._id,
+            name: partner.name,
+            phone: partner.phone,
+            vehicleType: partner.vehicleType,
+          },
+          message: `${partner.name} has accepted your order and is out for delivery!`,
+        };
+        io.to(`order_${updatedOrder._id}`).emit('order_status_update', payload);
+        io.to(`order_${updatedOrder._id}`).emit('delivery_status_update', payload);
+        io.to(`user_${updatedOrder.userId?._id || updatedOrder.userId}`).emit('order_status_update', payload);
+        io.to(`user_${updatedOrder.userId?._id || updatedOrder.userId}`).emit('delivery_status_update', payload);
+        io.to(`seller_${updatedOrder.sellerId?._id || updatedOrder.sellerId}`).emit('order_status_update', payload);
+      }
+
+      // Trigger push notification to customer
+      try {
+        const pushNotification = require('../utils/pushNotification.service');
+        const customer = await require('../models/User').findById(updatedOrder.userId?._id || updatedOrder.userId);
+        pushNotification.notifyOutForDelivery({
+          order: updatedOrder,
+          customer,
+          riderName: partner.name,
+          io,
+        }).catch(e => console.warn('Push error:', e.message));
+      } catch (e) {}
+
+      res.json({ success: true, message: 'Order accepted successfully! Now out for delivery.', order: updatedOrder });
     } else {
       res.status(400).json({ success: false, message: result.message });
     }

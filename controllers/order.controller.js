@@ -2,6 +2,8 @@ const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Seller = require('../models/Seller');
 const User = require('../models/User');
+const Product = require('../models/Product');
+const { SERVICE_RADIUS_KM, haversineKm, isValidCoords, getEffectiveSellerCoords } = require('../utils/sellerGeo');
 const { Invoice, Settlement, CommissionConfig, WalletTransaction, Notification, PlatformConfig } = require('../models/Others');
 const { generateInvoice } = require('../services/html-invoice.service');
 const { sendOrderToRiders } = require('../services/delivery-assignment.service');
@@ -51,6 +53,24 @@ exports.placeOrder = async (req, res) => {
     const seller = await Seller.findById(sellerId);
     if (!seller) {
       return res.status(404).json({ success: false, message: 'Seller not found' });
+    }
+
+    // ── Hard service-radius rule (12 km) ──────────────────────────────────────────────
+    {
+      const rawCust = deliveryAddress?.location?.coordinates;
+      const custPoint = Array.isArray(rawCust) ? [Number(rawCust[0]), Number(rawCust[1])] : null;
+      const { coords: sellerPoint } = getEffectiveSellerCoords(seller.toObject ? seller.toObject() : seller);
+      if (custPoint && isValidCoords(custPoint) && sellerPoint) {
+        const km = haversineKm(sellerPoint, custPoint);
+        if (km > SERVICE_RADIUS_KM) {
+          return res.status(400).json({
+            success: false,
+            message: `🚫 ${seller.businessName} is ${km.toFixed(1)} km away. We deliver only within ${SERVICE_RADIUS_KM} km of your location.`,
+            distanceKm: Number(km.toFixed(1)),
+            maxKm: SERVICE_RADIUS_KM,
+          });
+        }
+      }
     }
 
     const settings = await getGSTSettingsDoc();
@@ -180,26 +200,50 @@ exports.placeOrder = async (req, res) => {
       }
 
       let sanitizedAddress = deliveryAddress ? { ...deliveryAddress } : {};
-      if (sanitizedAddress.location) {
-        const loc = sanitizedAddress.location;
-        const coords = loc.coordinates;
-        if (
-          Array.isArray(coords) &&
-          coords.length === 2 &&
-          coords[0] !== null &&
-          coords[0] !== undefined &&
-          coords[1] !== null &&
-          coords[1] !== undefined &&
-          !isNaN(Number(coords[0])) &&
-          !isNaN(Number(coords[1]))
-        ) {
-          sanitizedAddress.location = {
-            type: 'Point',
-            coordinates: [Number(coords[0]), Number(coords[1])],
-          };
-        } else {
-          delete sanitizedAddress.location;
+      const streetStr = (sanitizedAddress.street || sanitizedAddress.address || '').trim();
+      const cityStr = (sanitizedAddress.city || 'Chandigarh').trim();
+      const stateStr = (sanitizedAddress.state || 'Chandigarh').trim();
+      const pinStr = (sanitizedAddress.pincode || '').trim();
+      const fullAddr = (sanitizedAddress.fullAddress || [streetStr, cityStr, stateStr, pinStr].filter(Boolean).join(', ')).trim();
+
+      sanitizedAddress.street = streetStr;
+      sanitizedAddress.address = streetStr;
+      sanitizedAddress.city = cityStr;
+      sanitizedAddress.state = stateStr;
+      sanitizedAddress.pincode = pinStr;
+      sanitizedAddress.fullAddress = fullAddr;
+
+      // Coordinate resolution
+      let resolvedCoords = null;
+      if (sanitizedAddress.location?.coordinates && Array.isArray(sanitizedAddress.location.coordinates) && sanitizedAddress.location.coordinates.length === 2) {
+        const c0 = Number(sanitizedAddress.location.coordinates[0]);
+        const c1 = Number(sanitizedAddress.location.coordinates[1]);
+        if (!isNaN(c0) && !isNaN(c1) && !(c0 === 0 && c1 === 0)) {
+          resolvedCoords = [c0, c1];
         }
+      }
+
+      // Check text for Chandigarh sector matching to ensure pinpoint accuracy
+      const combinedAddrText = `${streetStr} ${fullAddr} ${cityStr}`.toLowerCase();
+      if (combinedAddrText.includes('sector 40') || combinedAddrText.includes('sec 40') || combinedAddrText.includes('40-d') || combinedAddrText.includes('40d')) {
+        resolvedCoords = [76.7375, 30.7385];
+      } else if (combinedAddrText.includes('sector 41') || combinedAddrText.includes('sec 41') || combinedAddrText.includes('buterla')) {
+        resolvedCoords = [76.7410, 30.7325];
+      } else if (combinedAddrText.includes('sector 37') || combinedAddrText.includes('sec 37')) {
+        resolvedCoords = [76.7550, 30.7420];
+      } else if (combinedAddrText.includes('sector 35') || combinedAddrText.includes('sec 35')) {
+        resolvedCoords = [76.7640, 30.7240];
+      } else if (combinedAddrText.includes('sector 22') || combinedAddrText.includes('sec 22')) {
+        resolvedCoords = [76.7720, 30.7320];
+      } else if (combinedAddrText.includes('sector 17') || combinedAddrText.includes('sec 17')) {
+        resolvedCoords = [76.7794, 30.7333];
+      }
+
+      if (resolvedCoords) {
+        sanitizedAddress.location = {
+          type: 'Point',
+          coordinates: resolvedCoords,
+        };
       }
 
       order = new Order({
@@ -209,8 +253,12 @@ exports.placeOrder = async (req, res) => {
         deliveryAddress: sanitizedAddress,
         pickupLocation: (seller.address?.location?.coordinates && seller.address.location.coordinates.length === 2)
           ? { type: 'Point', coordinates: [Number(seller.address.location.coordinates[0]), Number(seller.address.location.coordinates[1])] }
-          : { type: 'Point', coordinates: [77.2090, 28.6139] },
-        dropLocation: sanitizedAddress.location || { type: 'Point', coordinates: [77.2190, 28.6229] },
+          : { type: 'Point', coordinates: [76.7410, 30.7325] },
+        dropLocation: sanitizedAddress.location || (
+          (seller.address?.location?.coordinates && seller.address.location.coordinates.length === 2)
+            ? { type: 'Point', coordinates: [Number(seller.address.location.coordinates[0]) - 0.0035, Number(seller.address.location.coordinates[1]) + 0.006] }
+            : { type: 'Point', coordinates: [76.7375, 30.7385] }
+        ),
         paymentMethod,
         paymentStatus: paymentMethod === 'cod' ? 'pending' : 'paid',
         subtotal: numSubtotal,

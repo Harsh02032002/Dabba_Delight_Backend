@@ -438,6 +438,8 @@ const deliveryPartnerSchema = new mongoose.Schema(
     tips: { type: Number, default: 0 },
     zone: String,
     city: String,
+    pushToken: String,
+    fcmToken: String,
   },
   { timestamps: true },
 );

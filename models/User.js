@@ -19,6 +19,7 @@ const userSchema = new mongoose.Schema({
   isBlocked: { type: Boolean, default: false },
   businessName: String,
   fcmToken: String,
+  pushToken: String,
   emailVerificationCode: String,
   emailVerificationExpires: Date,
   resetPasswordCode: String,

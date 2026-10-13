@@ -5,8 +5,8 @@ const { deleteFromS3 } = require('../middleware/s3-upload.middleware');
 // GET /api/products
 exports.getProducts = async (req, res) => {
   try {
-    const { search, category, isVeg, isAvailable, page = 1, limit = 20, sort = '-createdAt', sellerId } = req.query;
-    const filter = {};
+    const { search, category, isVeg, isAvailable, page = 1, limit = 20, sort = '-createdAt', sellerId, lat, lng, radius, city } = req.query;
+    const filter = { isDeleted: { $ne: true }, sellerId: { $ne: null, $exists: true } };
     if (search) filter.$or = [
       { name: { $regex: search, $options: 'i' } },
       { description: { $regex: search, $options: 'i' } },
@@ -20,6 +20,16 @@ exports.getProducts = async (req, res) => {
       const ids = String(req.query.sellerIds).split(',').map(s => s.trim()).filter(Boolean);
       if (ids.length > 0) {
         filter.sellerId = { $in: ids };
+      }
+    }
+    if (lat && lng) {
+      const { findNearbySellers } = require('../utils/sellerGeo');
+      const nearby = await findNearbySellers({ lat, lng, radiusMeters: radius, type: req.query.type, areaName: city });
+      const nearbyIds = nearby.map(s => s._id);
+      if (filter.sellerId && filter.sellerId.$in) {
+        filter.sellerId.$in = filter.sellerId.$in.filter(id => nearbyIds.some(nid => nid.toString() === id.toString()));
+      } else if (!filter.sellerId) {
+        filter.sellerId = { $in: nearbyIds };
       }
     }
     if (req.query.type) {

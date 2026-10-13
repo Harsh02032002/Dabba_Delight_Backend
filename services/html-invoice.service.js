@@ -1,8 +1,33 @@
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const puppeteer = require('puppeteer');
 const { Invoice, PlatformConfig } = require('../models/Others');
 const { uploadToS3 } = require('../middleware/s3-upload.middleware');
+
+// ─── PUPPETEER HELPERS (Windows-safe) ────────────────────
+// Chrome on Windows keeps `lockfile` open for a moment after exit. If Puppeteer owns the
+// temp profile it tries to delete it in the background and the EBUSY rejection is
+// unhandled -> whole server crashes. So we own the profile dir and clean it ourselves.
+const safeRemoveDir = async (dir) => {
+  if (!dir) return;
+  try {
+    await fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+  } catch (e) {
+    // Still locked - leave it for the OS temp cleaner, never crash the server
+    console.warn(`⚠️ Could not remove Chrome profile ${dir}: ${e.code || e.message}`);
+  }
+};
+
+const safeCloseBrowser = async (browser) => {
+  if (!browser) return;
+  try {
+    await browser.close();
+  } catch (e) {
+    console.warn('⚠️ browser.close() failed:', e.message);
+    try { browser.process()?.kill('SIGKILL'); } catch (_) {}
+  }
+};
 
 // ─── CONFIGURATION ──────────────────────────────────
 const COLORS = {
@@ -262,10 +287,15 @@ exports.generateInvoice = async (order) => {
   if (!fs.existsSync(pdfDir)) fs.mkdirSync(pdfDir, { recursive: true });
   const tempPdfPath = path.join(pdfDir, `${invoiceNumber}.pdf`);
 
+  let browser = null;
+  let profileDir = null;
   try {
     console.log(`🚀 Generating Invoice #${invoiceNumber} via Puppeteer...`);
-    const browser = await puppeteer.launch({
+    // Own, unique profile dir (outside the project so nodemon doesn't restart on it)
+    profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dn-invoice-chrome-'));
+    browser = await puppeteer.launch({
       headless: true,
+      userDataDir: profileDir,
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--font-render-hinting=none']
     });
     const page = await browser.newPage();
@@ -278,9 +308,12 @@ exports.generateInvoice = async (order) => {
       margin: { top: '0px', right: '0px', bottom: '0px', left: '0px' }
     });
     
-    await browser.close();
+    await safeCloseBrowser(browser);
+    browser = null;
   } catch (err) {
     console.error('❌ Puppeteer failed, using Fallback Engine:', err.message);
+    await safeCloseBrowser(browser);
+    browser = null;
     
     const PDFDocument = require('pdfkit');
     const doc = new PDFDocument({ size: 'A4', margin: 0 });
@@ -374,6 +407,10 @@ exports.generateInvoice = async (order) => {
 
     doc.end();
     await new Promise((resolve) => stream.on('finish', resolve));
+  } finally {
+    // Remove our Chrome profile in the background - never awaited, never throws
+    const dirToRemove = profileDir;
+    setTimeout(() => { safeRemoveDir(dirToRemove); }, 1000);
   }
 
   // Upload to S3

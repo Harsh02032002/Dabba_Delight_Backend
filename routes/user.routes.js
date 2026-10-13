@@ -39,4 +39,20 @@ router.post('/sellers/:sellerId/rate', auth, uc.rateSeller);
 router.post('/orders/:orderId/rate', auth, uc.rateOrder);
 router.get('/sellers/:sellerId/rating-breakdown', auth, uc.getSellerRatingBreakdown);
 
+// Device Push Token Registration (FCM / Expo)
+router.post('/push-token', auth, async (req, res) => {
+  try {
+    const { pushToken, fcmToken } = req.body;
+    const tokenToSave = pushToken || fcmToken;
+    if (!tokenToSave) return res.status(400).json({ success: false, message: 'Push token required' });
+    await require('../models/User').findByIdAndUpdate(req.user._id, {
+      fcmToken: tokenToSave,
+      pushToken: tokenToSave,
+    });
+    res.json({ success: true, message: 'Push token registered successfully' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 module.exports = router;

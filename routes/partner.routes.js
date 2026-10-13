@@ -14,6 +14,7 @@ router.use(auth);
 router.put('/toggle-online', dc.goOnline);
 router.put('/location-update', dc.updateDeliveryLocation);
 router.get('/current-order', dc.getActiveOrder);
+router.get('/available-orders', dc.getAvailableOrders);
 router.get('/profile', dc.getPartnerProfile);
 router.get('/order-history', dc.getOrderHistory);
 router.get('/earnings', dc.getEarnings);
@@ -34,5 +35,33 @@ router.patch('/orders/:orderId/status', dc.updateDeliveryStatus);
 router.post('/confirm-delivery', dc.confirmDeliveryOTP);
 router.post('/order/confirm-delivery', dc.confirmDeliveryOTP);
 router.post('/orders/:orderId/confirm-delivery', dc.confirmDeliveryOTP);
+
+// Device Push Token Registration for Riders (FCM / Expo)
+router.post('/push-token', async (req, res) => {
+  try {
+    const { pushToken, fcmToken } = req.body;
+    const tokenToSave = pushToken || fcmToken;
+    if (!tokenToSave) return res.status(400).json({ success: false, message: 'Push token required' });
+    
+    const partnerId = req.user.deliveryPartnerId || req.user._id;
+    const { DeliveryPartner } = require('../models/Others');
+    const User = require('../models/User');
+
+    await DeliveryPartner.findByIdAndUpdate(partnerId, {
+      fcmToken: tokenToSave,
+      pushToken: tokenToSave,
+    });
+
+    await User.findByIdAndUpdate(req.user._id, {
+      fcmToken: tokenToSave,
+      pushToken: tokenToSave,
+    });
+
+    console.log(`📱 [Rider Push Token Registered] partner: ${partnerId}`);
+    res.json({ success: true, message: 'Rider push token registered successfully' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 
 module.exports = router;

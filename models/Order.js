@@ -8,7 +8,7 @@ const orderSchema = new mongoose.Schema({
     menuItemId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Product',
-      set: v => v.startsWith('custom-') ? new mongoose.Types.ObjectId() : v
+      set: v => (typeof v === 'string' && v.startsWith('custom-')) ? new mongoose.Types.ObjectId() : v
     },
     name: String,
     sellingPrice: Number,
@@ -69,11 +69,11 @@ const orderSchema = new mongoose.Schema({
   deliveryLocation: { lat: Number, lng: Number },
   pickupLocation: {
     type: { type: String, enum: ['Point'], default: 'Point' },
-    coordinates: { type: [Number], default: [77.2090, 28.6139] },
+    coordinates: { type: [Number] },
   },
   dropLocation: {
     type: { type: String, enum: ['Point'], default: 'Point' },
-    coordinates: { type: [Number], default: [77.2190, 28.6229] },
+    coordinates: { type: [Number] },
   },
   statusHistory: [{
     status: String,

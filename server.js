@@ -4,6 +4,23 @@ try { dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']); } catch (e) {}
 const path = require('path');
 const fs = require('fs');
 
+// ─── Crash guard for harmless Windows temp-file locks ───
+// Puppeteer/Chrome profile cleanup can reject with EBUSY/EPERM after the PDF is
+// already generated. Don't let that kill the whole API server.
+const isHarmlessTempLockError = (err) =>
+  !!err &&
+  ['EBUSY', 'EPERM', 'ENOTEMPTY'].includes(err.code) &&
+  /puppeteer|chrome|dn-invoice-chrome|lockfile/i.test(String(err.path || err.message || ''));
+
+process.on('unhandledRejection', (reason) => {
+  if (isHarmlessTempLockError(reason)) {
+    console.warn(`⚠️ Ignored temp-file lock error (${reason.code}): ${reason.path || reason.message}`);
+    return;
+  }
+  // Preserve Node's default behaviour for real bugs
+  throw reason;
+});
+
 const envPath = path.join(__dirname, '.env');
 
 try {
@@ -36,27 +53,6 @@ try {
   }
 } catch (e) {
   console.error('QR Setup error:', e.message);
-}
-
-try {
-  const srcClient = path.resolve(__dirname, '../Dabba-Rider-App/node_modules/socket.io-client');
-  const destDir = path.resolve(__dirname, '../DabbaExpoApp/node_modules/socket.io-client');
-  const destFile = path.resolve(__dirname, '../DabbaExpoApp/src/services/socket.io.js');
-  if (fs.existsSync(srcClient)) {
-    if (!fs.existsSync(destDir)) {
-      fs.cpSync(srcClient, destDir, { recursive: true });
-      console.log('✅ Auto-copied socket.io-client to DabbaExpoApp/node_modules');
-    }
-    const distJs = path.join(srcClient, 'dist/socket.io.js');
-    if (fs.existsSync(distJs)) {
-      const servicesDir = path.dirname(destFile);
-      if (!fs.existsSync(servicesDir)) fs.mkdirSync(servicesDir, { recursive: true });
-      fs.copyFileSync(distJs, destFile);
-      console.log('✅ Auto-copied socket.io.js to DabbaExpoApp/src/services');
-    }
-  }
-} catch (e) {
-  console.error('Copy socket.io-client error:', e.message);
 }
 
 console.log('🔧 Loading environment from:', envPath);

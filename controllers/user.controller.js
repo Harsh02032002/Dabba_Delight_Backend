@@ -4,6 +4,7 @@ const Seller = require('../models/Seller');
 const Product = require('../models/Product');
 const Order = require('../models/Order');
 const RatingService = require('../services/rating.service');
+const { findNearbySellers, SERVICE_RADIUS_KM, haversineKm, isValidCoords, getEffectiveSellerCoords } = require('../utils/sellerGeo');
 
 // ─── Notifications ──────────────────────────────
 exports.getNotifications = async (req, res) => {
@@ -92,14 +93,39 @@ const DEFAULT_COVER = 'https://images.unsplash.com/photo-1504674900247-0877df9cc
 // ─── User Sellers & Menu ────────────────────────
 exports.getSellers = async (req, res) => {
   try {
+    const { lat, lng, radius, city, locationName, type, search } = req.query;
+
+    const hasUserCoords = isValidCoords([Number(lng), Number(lat)]);
+    const hasArea = !!(city || locationName);
+
+    if (hasUserCoords || hasArea) {
+      const sellers = await findNearbySellers({
+        lat,
+        lng,
+        radiusMeters: radius,
+        type,
+        areaName: city || locationName,
+        limit: 50,
+      });
+
+      const sellersWithImages = (sellers || []).map(seller => ({
+        ...seller,
+        logo: seller.logo || DEFAULT_LOGO,
+        coverImage: seller.coverImage || DEFAULT_COVER,
+        image: seller.coverImage || DEFAULT_COVER,
+      }));
+
+      return res.json({ success: true, sellers: sellersWithImages, total: sellersWithImages.length });
+    }
+
     const filter = { isActive: true };
-    if (req.query.type && req.query.type !== 'all') {
-      const typeVal = req.query.type;
+    if (type && type !== 'all') {
+      const typeVal = type;
       filter.type = (typeVal === 'home_chef' || typeVal === 'home-chef')
         ? { $in: ['home_chef', 'home-chef'] }
         : typeVal;
     }
-    if (req.query.search) filter.businessName = { $regex: req.query.search, $options: 'i' };
+    if (search) filter.businessName = { $regex: search, $options: 'i' };
     
     const sellers = await Seller.find(filter)
       .select('_id businessName type logo coverImage rating totalOrders totalRevenue cuisines address isActive isVerified description')
@@ -119,12 +145,40 @@ exports.getSellers = async (req, res) => {
 
 exports.getMenuItems = async (req, res) => {
   try {
-    // Build product filter
-    const filter = { isAvailable: true, isDeleted: { $ne: true } };
+    // Only fetch products that have an active seller and are available
+    const filter = { isAvailable: true, isDeleted: { $ne: true }, sellerId: { $ne: null, $exists: true } };
+
+    const { lat, lng, radius, city, locationName, sellerId, sellerIds, type, category, isVeg, search, page = 1, limit = 50 } = req.query;
+
+    const hasUserCoords = isValidCoords([Number(lng), Number(lat)]);
+    const hasArea = !!(city || locationName);
+
+    // If client requested a specific sellerId AND passed coordinates:
+    if (sellerId && hasUserCoords) {
+      const targetSeller = await Seller.findById(sellerId);
+      if (targetSeller) {
+        const { coords: sellerPoint } = getEffectiveSellerCoords(targetSeller.toObject ? targetSeller.toObject() : targetSeller);
+        const userPoint = [Number(lng), Number(lat)];
+        if (sellerPoint && isValidCoords(userPoint)) {
+          const distKm = haversineKm(userPoint, sellerPoint);
+          if (distKm > SERVICE_RADIUS_KM) {
+            return res.json({
+              success: true,
+              products: [],
+              total: 0,
+              notServiceable: true,
+              distanceKm: Math.round(distKm * 10) / 10,
+              message: `This seller is ${distKm.toFixed(1)} km away. Delivery is only available within ${SERVICE_RADIUS_KM} km.`
+            });
+          }
+        }
+      }
+    }
 
     let targetSellerIds = null;
-    if (req.query.type && req.query.type !== 'all') {
-      const typeVal = req.query.type;
+
+    if (type && type !== 'all') {
+      const typeVal = type;
       const typeQuery = (typeVal === 'home_chef' || typeVal === 'home-chef') 
         ? { $in: ['home_chef', 'home-chef'] } 
         : typeVal;
@@ -132,43 +186,68 @@ exports.getMenuItems = async (req, res) => {
       targetSellerIds = matchingSellers.map(s => s._id.toString());
     }
 
-    if (req.query.sellerIds) {
-      let ids = req.query.sellerIds.split(',').map(s => s.trim()).filter(Boolean);
+    // Location-wise menu restriction: strictly only sellers within SERVICE_RADIUS_KM (12 km)
+    if (hasUserCoords || hasArea) {
+      const nearby = await findNearbySellers({
+        lat,
+        lng,
+        radiusMeters: radius,
+        type,
+        areaName: city || locationName,
+        limit: 500,
+      });
+      const nearbyIds = nearby.map(s => s._id.toString());
+      targetSellerIds = targetSellerIds
+        ? targetSellerIds.filter(id => nearbyIds.includes(id))
+        : nearbyIds;
+    }
+
+    if (sellerIds) {
+      let ids = String(sellerIds).split(',').map(s => s.trim()).filter(Boolean);
       if (targetSellerIds) {
-        // Strictly filter to only requested type sellers
         ids = ids.filter(id => targetSellerIds.includes(id.toString()));
       }
       filter.sellerId = { $in: ids };
-    } else if (req.query.sellerId) {
-      if (targetSellerIds && !targetSellerIds.includes(req.query.sellerId.toString())) {
-        filter.sellerId = null; // Mismatch with requested type
+    } else if (sellerId) {
+      if (targetSellerIds && !targetSellerIds.includes(sellerId.toString())) {
+        filter.sellerId = null; // Mismatch with nearby sellers or type
       } else {
-        filter.sellerId = req.query.sellerId;
+        filter.sellerId = sellerId;
       }
     } else if (targetSellerIds) {
       filter.sellerId = { $in: targetSellerIds };
+    } else if (!hasUserCoords && !hasArea) {
+      // If client sent no location and no seller ID, never leak items from distant cities!
+      return res.json({
+        success: true,
+        products: [],
+        total: 0,
+        message: 'Location required to load nearby menu items'
+      });
     }
-    
-    if (req.query.category) filter.category = req.query.category;
-    if (req.query.isVeg === 'true') filter.isVeg = true;
-    if (req.query.search) filter.$or = [
-      { name: { $regex: req.query.search, $options: 'i' } },
-      { tags: { $regex: req.query.search, $options: 'i' } },
+
+    if (category) filter.category = category;
+    if (isVeg === 'true') filter.isVeg = true;
+    if (search) filter.$or = [
+      { name: { $regex: search, $options: 'i' } },
+      { tags: { $regex: search, $options: 'i' } },
     ];
 
     let products = await Product.find(filter)
       .select('_id sellerId name description sellingPrice discountPrice category image isVeg preparationTime rating totalOrders stock')
-      .populate('sellerId', '_id businessName type logo rating')
+      .populate('sellerId', '_id businessName type logo rating address')
       .sort({ rating: -1 })
-      .limit(Number(req.query.limit) || 50)
-      .skip(((Number(req.query.page) || 1) - 1) * (Number(req.query.limit) || 50))
+      .limit(Number(limit) || 50)
+      .skip(((Number(page) || 1) - 1) * (Number(limit) || 50))
       .lean();
 
-    // Security guarantee: filter out any product whose populated seller type doesn't match
-    if (req.query.type && req.query.type !== 'all') {
-      const typeVal = req.query.type;
+    // Ensure sellerId populated exists and is active
+    products = products.filter(p => p.sellerId != null);
+
+    // Strict type check
+    if (type && type !== 'all') {
+      const typeVal = type;
       products = products.filter(p => {
-        if (!p.sellerId) return false;
         const sType = typeof p.sellerId === 'object' ? p.sellerId.type : null;
         if (!sType) return false;
         if (typeVal === 'home_chef' || typeVal === 'home-chef') {
@@ -177,7 +256,7 @@ exports.getMenuItems = async (req, res) => {
         return sType === typeVal;
       });
     }
-    
+
     res.json({ success: true, products, total: products.length });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
@@ -355,11 +434,34 @@ exports.getOrderTracking = async (req, res) => {
     // Extract coordinates safely
     const sellerCoords = order.sellerId?.address?.location?.coordinates;
     const pickupCoords = order.pickupLocation?.coordinates || 
-      (sellerCoords && sellerCoords.length === 2 ? sellerCoords : [77.2090, 28.6139]);
+      (sellerCoords && sellerCoords.length === 2 ? sellerCoords : [76.7794, 30.7333]);
 
     const custCoords = order.deliveryAddress?.location?.coordinates;
-    const dropCoords = order.dropLocation?.coordinates || 
-      (custCoords && custCoords.length === 2 ? custCoords : [77.2190, 28.6229]);
+    let dropCoords = order.dropLocation?.coordinates || 
+      (custCoords && custCoords.length === 2 ? custCoords : null);
+
+    // If dropCoords is missing, or is hardcoded Delhi while pickup is not Delhi, or >35km from pickup:
+    const isDelhiDrop = dropCoords && Math.abs(dropCoords[0] - 77.2190) < 0.05 && Math.abs(dropCoords[1] - 28.6229) < 0.05;
+    const isDelhiPickup = pickupCoords && Math.abs(pickupCoords[0] - 77.2090) < 0.05 && Math.abs(pickupCoords[1] - 28.6139) < 0.05;
+
+    let distKm = 0;
+    if (pickupCoords && dropCoords) {
+      const lat1 = pickupCoords[1], lon1 = pickupCoords[0];
+      const lat2 = dropCoords[1], lon2 = dropCoords[0];
+      const R = 6371;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      distKm = R * c;
+    }
+
+    if (!dropCoords || (isDelhiDrop && !isDelhiPickup) || distKm > 35) {
+      // Place drop within ~1.5km of pickup so user tracking map doesn't zoom out across India
+      dropCoords = [pickupCoords[0] + 0.009, pickupCoords[1] + 0.007];
+    }
 
     let riderLocation = null;
     let riderInfo = null;

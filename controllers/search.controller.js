@@ -1,11 +1,12 @@
 const Product = require('../models/Product');
 const Seller = require('../models/Seller');
+const { findNearbySellers, SERVICE_RADIUS_KM } = require('../utils/sellerGeo');
 
 // GET /api/search?q=biryani&type=home_chef&category=biryani&isVeg=true&lat=&lng=
 exports.search = async (req, res) => {
   try {
-    const { q, type, category, isVeg, lat, lng, radius = 10000, page = 1, limit = 20 } = req.query;
-    const productFilter = { isAvailable: true };
+    const { q, type, category, isVeg, lat, lng, radius, page = 1, limit = 20, city } = req.query;
+    const productFilter = { isAvailable: true, isDeleted: { $ne: true } };
     if (q) productFilter.$or = [
       { name: { $regex: q, $options: 'i' } },
       { description: { $regex: q, $options: 'i' } },
@@ -14,15 +15,32 @@ exports.search = async (req, res) => {
     if (category) productFilter.category = category;
     if (isVeg === 'true') productFilter.isVeg = true;
 
-    let sellerFilter = { isActive: true };
-    if (type) sellerFilter.type = type;
     if (lat && lng) {
-      sellerFilter['address.location'] = {
-        $near: { $geometry: { type: 'Point', coordinates: [Number(lng), Number(lat)] }, $maxDistance: Number(radius) },
-      };
+      const nearbySellers = await findNearbySellers({
+        lat,
+        lng,
+        radiusMeters: radius, // capped to 12 km
+        type,
+        areaName: city,
+        limit: 500,
+      });
+      const sellerIds = nearbySellers.map(s => s._id);
+      // Strictly restrict search to sellers within 12km
+      productFilter.sellerId = { $in: sellerIds };
+    } else if (city) {
+      const nearbySellers = await findNearbySellers({
+        areaName: city,
+        type,
+        limit: 500,
+      });
+      const sellerIds = nearbySellers.map(s => s._id);
+      productFilter.sellerId = { $in: sellerIds };
+    } else if (type && type !== 'all') {
+      const matchingSellers = await Seller.find({ isActive: true, type }).select('_id').lean();
+      productFilter.sellerId = { $in: matchingSellers.map(s => s._id) };
+    } else {
+      productFilter.sellerId = { $ne: null, $exists: true };
     }
-    const sellers = await Seller.find(sellerFilter).select('_id');
-    if (sellers.length > 0) productFilter.sellerId = { $in: sellers.map(s => s._id) };
 
     const products = await Product.find(productFilter)
       .populate('sellerId', 'businessName type logo rating')
