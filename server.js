@@ -230,6 +230,32 @@ io.use(async (socket, next) => {
   }
 });
 
+const SellerModel = require('./models/Seller');
+
+/** Whether this socket may see live data for an order (owner, assigned rider, its seller, admin) */
+const canAccessOrder = (socket, order) => {
+  if (!socket.userId || !order) return false;
+  if (socket.userRole === 'admin') return true;
+  const ownerId = order.userId?._id || order.userId;
+  if (ownerId && String(ownerId) === socket.userId) return true;
+  const riderId = order.deliveryPartnerId?._id || order.deliveryPartnerId;
+  if (socket.deliveryPartnerId && riderId && String(riderId) === socket.deliveryPartnerId) return true;
+  const sellerId = order.sellerId?._id || order.sellerId;
+  if (socket.sellerId && sellerId && String(sellerId) === socket.sellerId) return true;
+  return false;
+};
+
+const joinSellerRoom = async (socket) => {
+  if (socket.userRole !== 'seller' || !socket.userId) return null;
+  if (!socket.sellerId) {
+    const seller = await SellerModel.findOne({ userId: socket.userId }).select('_id').lean();
+    if (!seller) return null;
+    socket.sellerId = seller._id.toString();
+  }
+  socket.join(`seller_${socket.sellerId}`);
+  return socket.sellerId;
+};
+
 io.on('connection', async (socket) => {
   console.log(`✅ Socket connected: ${socket.id} | User: ${socket.userId || 'guest'} | Role: ${socket.userRole}`);
 
@@ -241,6 +267,7 @@ io.on('connection', async (socket) => {
 
     // If partner, also join by DeliveryPartner _id
     if (socket.userRole === 'delivery') {
+      socket.join('delivery_partners');
       try {
         const dp = await DeliveryPartner.findOne({ userId: socket.userId });
         if (dp) {
@@ -250,11 +277,40 @@ io.on('connection', async (socket) => {
         }
       } catch (e) {}
     }
+
+    if (socket.userRole === 'seller') {
+      try { await joinSellerRoom(socket); } catch (e) {}
+    }
+
+    if (socket.userRole === 'admin') socket.join('admins');
   }
 
-  socket.on('join_room', (room) => {
-    socket.join(room);
-    console.log(`📱 Socket ${socket.id} joined room: ${room}`);
+  // Seller web dashboard asks to join its restaurant room
+  socket.on('join_seller_room', async () => {
+    try {
+      const sellerId = await joinSellerRoom(socket);
+      if (sellerId) console.log(`🏪 Socket ${socket.id} joined seller room: seller_${sellerId}`);
+    } catch (e) {}
+  });
+
+  // Only rooms the socket is entitled to: its own personal rooms or an order it can access
+  socket.on('join_room', async (room) => {
+    if (typeof room !== 'string') return;
+    if (socket.rooms.has(room)) return;
+    const match = room.match(/^order_([a-f0-9]{24})$/i);
+    if (!match) {
+      console.log(`🚫 Socket ${socket.id} denied room: ${room}`);
+      return;
+    }
+    try {
+      const order = await Order.findById(match[1]).select('userId sellerId deliveryPartnerId').lean();
+      if (!canAccessOrder(socket, order)) {
+        console.log(`🚫 Socket ${socket.id} denied room: ${room}`);
+        return;
+      }
+      socket.join(room);
+      console.log(`📱 Socket ${socket.id} joined room: ${room}`);
+    } catch (e) {}
   });
   
   socket.on('leave_room', (room) => {
@@ -268,8 +324,8 @@ io.on('connection', async (socket) => {
     if (socket.userId) {
       await DeliveryPartner.findOneAndUpdate({ userId: socket.userId }, { isOnline: true, isAvailable: true }).catch(() => {});
     }
-    socket.broadcast.emit('partnerStatusUpdate', { 
-      partnerId: socket.userId, 
+    io.to('admins').emit('partnerStatusUpdate', {
+      partnerId: socket.userId,
       status: 'online',
     });
   });
@@ -279,8 +335,8 @@ io.on('connection', async (socket) => {
     if (socket.userId) {
       await DeliveryPartner.findOneAndUpdate({ userId: socket.userId }, { isOnline: false, isAvailable: false }).catch(() => {});
     }
-    socket.broadcast.emit('partnerStatusUpdate', { 
-      partnerId: socket.userId, 
+    io.to('admins').emit('partnerStatusUpdate', {
+      partnerId: socket.userId,
       status: 'offline',
     });
   });
@@ -305,20 +361,18 @@ io.on('connection', async (socket) => {
         );
 
         const targetOrderId = orderId || partner?.activeOrderId;
-        if (targetOrderId) {
-          const payload = {
-            orderId: targetOrderId,
-            partnerId: partner?._id || socket.userId,
-            lat,
-            lng,
-            timestamp: new Date()
-          };
-          // Broadcast to order room
-          io.to(`order_${targetOrderId}`).emit('delivery_location_update', payload);
-
-          // Also emit directly to the customer of this order
-          const ord = await Order.findById(targetOrderId).select('userId');
-          if (ord && ord.userId) {
+        if (targetOrderId && partner) {
+          // Only relay the location for an order this rider is actually delivering
+          const ord = await Order.findOne({ _id: targetOrderId, deliveryPartnerId: partner._id }).select('userId status').lean();
+          if (ord && !['delivered', 'cancelled'].includes(ord.status)) {
+            const payload = {
+              orderId: targetOrderId,
+              partnerId: partner._id,
+              lat,
+              lng,
+              timestamp: new Date()
+            };
+            io.to(`order_${targetOrderId}`).emit('delivery_location_update', payload);
             io.to(`user_${ord.userId}`).emit('delivery_location_update', payload);
           }
         }
@@ -327,8 +381,8 @@ io.on('connection', async (socket) => {
       }
     }
 
-    // Broadcast generic partner update
-    socket.broadcast.emit('partnerLocationUpdate', {
+    // Live rider positions are visible to admins only
+    io.to('admins').emit('partnerLocationUpdate', {
       partnerId: socket.userId,
       lat,
       lng,
@@ -336,69 +390,12 @@ io.on('connection', async (socket) => {
     });
   });
 
-  // Rider updates order status
-  socket.on('orderStatusUpdate', async (data) => {
+  // Rider app echoes status changes here after the REST call succeeds.
+  // The REST endpoints persist, validate and broadcast; this event must never change order state.
+  socket.on('orderStatusUpdate', (data) => {
     const { orderId, status } = data || {};
     if (orderId && status) {
-      console.log(`📦 orderStatusUpdate: Order ${orderId} -> ${status}`);
-      try {
-        const ord = await Order.findById(orderId);
-        if (ord) {
-          if (status === 'delivered' && ord.status !== 'delivered') {
-            ord.status = 'delivered';
-            ord.actualDelivery = new Date();
-            if (ord.paymentMethod === 'cod') ord.paymentStatus = 'paid';
-            await ord.save();
-
-            // Credit delivery fee to partner
-            const partnerId = ord.deliveryPartnerId || socket.deliveryPartnerId || socket.userId;
-            if (partnerId) {
-              const { DeliveryPartner, WalletTransaction } = require('./models/Others');
-              let partner = await DeliveryPartner.findOne({ userId: partnerId });
-              if (!partner) partner = await DeliveryPartner.findById(partnerId);
-              if (partner) {
-                const riderFee = Number(ord.deliveryFee || ord.riderPayout || 30);
-                partner.activeOrderId = null;
-                partner.isAvailable = true;
-                partner.totalDeliveries = (partner.totalDeliveries || 0) + 1;
-                partner.todayDeliveries = (partner.todayDeliveries || 0) + 1;
-                partner.earnings = Number(((partner.earnings || 0) + riderFee).toFixed(2));
-                partner.todayEarnings = Number(((partner.todayEarnings || 0) + riderFee).toFixed(2));
-                partner.weekEarnings = Number(((partner.weekEarnings || 0) + riderFee).toFixed(2));
-                partner.wallet = Number(((partner.wallet || 0) + riderFee).toFixed(2));
-                await partner.save();
-
-                await WalletTransaction.create({
-                  deliveryPartnerId: partner._id,
-                  userId: partner.userId,
-                  type: 'credit',
-                  amount: riderFee,
-                  description: `Delivery payout for Order #${ord.orderNumber || ord._id}`,
-                  referenceType: 'delivery_payout',
-                  balance: partner.wallet,
-                }).catch(() => {});
-                console.log(`💰 Credited ₹${riderFee} to rider ${partner.name} via socket orderStatusUpdate`);
-              }
-            }
-          }
-
-          const updatePayload = {
-            orderId,
-            status,
-            orderNumber: ord.orderNumber,
-            timestamp: new Date(),
-          };
-          io.to(`order_${orderId}`).emit('delivery_status_update', updatePayload);
-          io.to(`order_${orderId}`).emit('order_status_update', updatePayload);
-          io.to(`user_${ord.userId}`).emit('delivery_status_update', updatePayload);
-          io.to(`user_${ord.userId}`).emit('order_status_update', updatePayload);
-          if (status === 'delivered') {
-            io.to(`user_${ord.userId}`).emit('order_delivered', updatePayload);
-          }
-        }
-      } catch (e) {
-        console.error('Error in socket orderStatusUpdate:', e);
-      }
+      console.log(`📦 orderStatusUpdate (informational): Order ${orderId} -> ${status}`);
     }
   });
 
@@ -416,14 +413,9 @@ io.on('connection', async (socket) => {
         return socket.emit('track_order_error', { message: 'Order not found' });
       }
 
-      // Authorization check (Requirement 9: user can only track their own order)
-      if (
-        socket.userId &&
-        order.userId &&
-        socket.userRole === 'user' &&
-        order.userId.toString() !== socket.userId.toString()
-      ) {
-        return socket.emit('track_order_error', { message: 'Unauthorized to track this order' });
+      // Authorization: owner, assigned rider, the order's seller, or admin
+      if (!canAccessOrder(socket, order)) {
+        return socket.emit('track_order_error', { orderId, message: 'Unauthorized to track this order' });
       }
 
       socket.join(`order_${orderId}`);
@@ -456,6 +448,7 @@ io.on('connection', async (socket) => {
         orderId: order._id,
         orderNumber: order.orderNumber,
         status: order.status,
+        deliveryStatus: order.deliveryStatus || null,
         restaurantName: order.sellerId?.businessName || 'Restaurant',
         pickupCoords: { lat: pickupCoords[1], lng: pickupCoords[0] },
         dropCoords: { lat: dropCoords[1], lng: dropCoords[0] },
@@ -477,7 +470,7 @@ io.on('connection', async (socket) => {
   socket.on('disconnect', (reason) => {
     console.log(`❌ Socket disconnected: ${socket.id} (User: ${socket.userId || 'guest'}) | Reason: ${reason}`);
     if (socket.userId && socket.userRole === 'delivery') {
-      socket.broadcast.emit('partnerStatusUpdate', { 
+      io.to('admins').emit('partnerStatusUpdate', {
         partnerId: socket.userId, 
         status: 'offline',
       });

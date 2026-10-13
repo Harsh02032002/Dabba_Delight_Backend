@@ -311,11 +311,15 @@ const notificationSchema = new mongoose.Schema(
     title: { type: String, required: true },
     message: { type: String, required: true },
     isRead: { type: Boolean, default: false },
+    orderId: { type: mongoose.Schema.Types.ObjectId, ref: "Order" },
     data: mongoose.Schema.Types.Mixed,
+    /** `${orderId}:${event}:${userId}` — prevents duplicate lifecycle notifications */
+    dedupeKey: { type: String },
   },
   { timestamps: true },
 );
 notificationSchema.index({ userId: 1, createdAt: -1 });
+notificationSchema.index({ dedupeKey: 1 }, { unique: true, sparse: true });
 const Notification = mongoose.model("Notification", notificationSchema);
 
 // ─── Notification Preference ────────────────────
@@ -933,11 +937,12 @@ const walletTransactionSchema = new mongoose.Schema(
     },
     type: { type: String, enum: ["credit", "debit"], required: true },
     amount: { type: Number, required: true },
+    deliveryPartnerId: { type: mongoose.Schema.Types.ObjectId, ref: "DeliveryPartner" },
     description: String,
     referenceId: String,
     referenceType: {
       type: String,
-      enum: ["order", "refund", "referral", "topup", "settlement"],
+      enum: ["order", "refund", "referral", "topup", "settlement", "delivery_payout", "withdrawal"],
     },
     balance: Number,
   },

@@ -66,6 +66,16 @@ const orderSchema = new mongoose.Schema({
   estimatedDelivery: Date,
   actualDelivery: Date,
   deliveryPartnerId: { type: mongoose.Schema.Types.ObjectId, ref: 'DeliveryPartner' },
+  /** Rider leg, runs alongside `status` (see services/order-lifecycle.service.js) */
+  deliveryStatus: {
+    type: String,
+    enum: ['assigned', 'arrived_at_restaurant', 'picked_up', 'delivered'],
+    default: null,
+  },
+  riderAssignedAt: Date,
+  pickedUpAt: Date,
+  /** Set once when the rider payout is credited — guards against double crediting */
+  riderPayoutCreditedAt: Date,
   deliveryLocation: { lat: Number, lng: Number },
   pickupLocation: {
     type: { type: String, enum: ['Point'], default: 'Point' },

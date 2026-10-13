@@ -6,7 +6,52 @@ const Product = require('../models/Product');
 const { SERVICE_RADIUS_KM, haversineKm, isValidCoords, getEffectiveSellerCoords } = require('../utils/sellerGeo');
 const { Invoice, Settlement, CommissionConfig, WalletTransaction, Notification, PlatformConfig } = require('../models/Others');
 const { generateInvoice } = require('../services/html-invoice.service');
-const { sendOrderToRiders } = require('../services/delivery-assignment.service');
+const { sendOrderToRiders, releaseRider } = require('../services/delivery-assignment.service');
+const { validateSellerTransition, validateCustomerCancel } = require('../services/order-lifecycle.service');
+const pushNotification = require('../utils/pushNotification.service');
+const { DeliveryPartner } = require('../models/Others');
+
+const loadCustomer = (userId) => User.findById(userId).select('name pushToken fcmToken');
+
+/**
+ * pending → confirmed, exactly once (seller action or auto-confirm timer).
+ * Notifies the customer and offers the order to nearby riders.
+ */
+async function confirmOrder(orderId, { io, updatedBy }) {
+  const now = new Date();
+  const order = await Order.findOneAndUpdate(
+    { _id: orderId, status: 'pending' },
+    { $set: { status: 'confirmed' }, $push: { statusHistory: { status: 'confirmed', timestamp: now, updatedBy } } },
+    { new: true },
+  ).populate('sellerId', 'businessName');
+  if (!order) return null;
+
+  if (io) {
+    const payload = { orderId: order._id, orderNumber: order.orderNumber, status: 'confirmed', message: 'Your order has been confirmed and is being prepared!', timestamp: now };
+    io.to(`user_${order.userId}`).emit('order_status_update', payload);
+    io.to(`order_${order._id}`).emit('order_status_update', payload);
+    io.to(`seller_${order.sellerId?._id || order.sellerId}`).emit('order_confirmed', { order, message: `Order #${order.orderNumber} is ready for preparation!` });
+  }
+  pushNotification.notifyOrderConfirmed({ order, customer: await loadCustomer(order.userId), io })
+    .catch(e => console.warn('notifyOrderConfirmed error:', e.message));
+
+  const dispatch = await sendOrderToRiders(order._id, io);
+  console.log(`🛵 Rider dispatch for ${order.orderNumber}:`, dispatch.message || `${dispatch.notified || 0} notified`);
+  return order;
+}
+
+/** Undo a rider assignment when an order is cancelled before pickup */
+async function releaseAssignedRider(order, io) {
+  if (!order.deliveryPartnerId) return null;
+  const rider = await DeliveryPartner.findById(order.deliveryPartnerId);
+  await releaseRider(order.deliveryPartnerId, order._id);
+  if (io && rider) {
+    const payload = { orderId: order._id, orderNumber: order.orderNumber, status: 'cancelled' };
+    io.to(`delivery_partner_${rider._id}`).emit('orderCancelled', payload);
+    io.to(`delivery_partner_${rider.userId}`).emit('orderCancelled', payload);
+  }
+  return rider;
+}
 const { computeOrderGSTAndCommission, getGSTSettingsDoc } = require('../services/gst-order.service');
 const subscriptionService = require('../services/subscription.service');
 const walletController = require('../controllers/wallet.controller');
@@ -350,15 +395,6 @@ exports.placeOrder = async (req, res) => {
 
     try {
       if (io) {
-        await Notification.create({
-          userId: sellerId,
-          type: 'new_order',
-          title: '🍔 New Order Received',
-          message: `Order #${order.orderNumber} - ₹${grandTotal}`,
-          orderId: order._id,
-          isRead: false,
-        });
-
         io.to(`seller_${sellerId}`).emit('new_order', {
           orderId: order._id,
           orderNumber: order.orderNumber,
@@ -367,21 +403,13 @@ exports.placeOrder = async (req, res) => {
           itemCount: items?.length || 0,
           timestamp: new Date(),
         });
-
-        console.log(`✅ Notification sent to restaurant for order ${order.orderNumber}`);
       }
 
-      // ─── Create Notification for User ───
-      await Notification.create({
-        userId: req.user._id,
-        type: 'order',
-        title: '🎉 Order Placed Successfully!',
-        message: `Your order #${order.orderNumber} for ₹${grandTotal} has been placed successfully.`,
-        orderId: order._id,
-        isRead: false,
-      });
-      console.log(`✅ Notification created for user for order ${order.orderNumber}`);
-
+      // Customer + seller notifications (in-app, socket, push)
+      const sellerUser = seller.userId ? await User.findById(seller.userId).select('pushToken fcmToken') : null;
+      const customer = await loadCustomer(req.user._id);
+      await pushNotification.notifyOrderPlaced({ order, customer, sellerUser, io });
+      console.log(`✅ Order placed notifications sent for order ${order.orderNumber}`);
     } catch (notifErr) {
       console.log(`❌ Failed to send notification: ${notifErr.message}`);
     }
@@ -397,52 +425,12 @@ exports.placeOrder = async (req, res) => {
     const orderRef = order;
     setTimeout(async () => {
       try {
-        const updatedOrder = await Order.findById(orderRef._id);
-        if (updatedOrder) {
-          if (updatedOrder.status === 'pending') {
-            updatedOrder.status = 'confirmed';
-            updatedOrder.statusHistory.push({
-              status: 'confirmed',
-              timestamp: new Date(),
-              updatedBy: 'system',
-            });
-            await updatedOrder.save();
-            const ioLater = req.app.get('io');
-            if (ioLater) {
-              ioLater.to(`user_${orderRef.userId}`).emit('order_status_update', {
-                orderId: orderRef._id,
-                status: 'confirmed',
-                message: 'Your order has been confirmed and is being prepared!',
-              });
-              
-              // ─── Create Notification for User ───
-              await Notification.create({
-                userId: orderRef.userId,
-                type: 'order',
-                title: '👨‍🍳 Order Confirmed',
-                message: `Your order #${orderRef.orderNumber} has been confirmed and is being prepared!`,
-                orderId: orderRef._id,
-                isRead: false,
-              });
-
-              ioLater.to(`seller_${sellerId}`).emit('order_confirmed', {
-                order: updatedOrder,
-                message: `Order #${orderRef.orderNumber} is ready for preparation!`,
-              });
-            }
-          }
-        }
+        // No-op if the seller already confirmed or cancelled
+        await confirmOrder(orderRef._id, { io: req.app.get('io'), updatedBy: 'system' });
       } catch (err) {
         console.log(`❌ Auto-confirmation failed for order ${orderRef.orderNumber}:`, err.message);
       }
     }, preparationTime);
-
-    if (io) {
-      io.to(`seller_${sellerId}`).emit('new_order', {
-        order: order,
-        message: `New order #${order.orderNumber} received!`,
-      });
-    }
 
     res.status(201).json({
       success: true,
@@ -550,17 +538,24 @@ exports.rateOrder = async (req, res) => {
 // POST /api/user/orders/:id/cancel
 exports.cancelOrder = async (req, res) => {
   try {
-    const order = await Order.findById(req.params.id);
-    if (!order) return res.status(404).json({ message: 'Order not found' });
-    if (order.userId.toString() !== req.user._id.toString())
+    const existing = await Order.findById(req.params.id);
+    if (!existing) return res.status(404).json({ message: 'Order not found' });
+    if (existing.userId.toString() !== req.user._id.toString())
       return res.status(403).json({ message: 'Unauthorized' });
-    
-    const cancellable = ['pending', 'confirmed', 'preparing'];
-    if (!cancellable.includes(order.status))
-      return res.status(400).json({ message: 'Order cannot be cancelled at this stage' });
 
-    order.status = 'cancelled';
-    order.statusHistory.push({ status: 'cancelled', timestamp: new Date(), updatedBy: req.user._id });
+    const check = validateCustomerCancel(existing);
+    if (!check.ok) return res.status(400).json({ message: check.message });
+
+    // Atomic: only one cancel wins, and never after pickup (prevents double refunds)
+    const order = await Order.findOneAndUpdate(
+      { _id: existing._id, status: existing.status, deliveryStatus: { $ne: 'picked_up' } },
+      {
+        $set: { status: 'cancelled' },
+        $push: { statusHistory: { status: 'cancelled', timestamp: new Date(), updatedBy: req.user._id } },
+      },
+      { new: true },
+    );
+    if (!order) return res.status(409).json({ message: 'Order status changed. Please refresh and try again.' });
 
     // ─── Refund to wallet ──────────────────────────
     try {
@@ -572,13 +567,13 @@ exports.cancelOrder = async (req, res) => {
             description: `Refund for cancelled order #${order.orderNumber}`,
             referenceId: order._id.toString(), referenceType: 'refund', balance: user.wallet,
           });
-          
+
           await Notification.create({
             userId: order.userId, type: 'wallet',
             title: 'Refund Credited', message: `₹${order.total} refunded to your wallet for order #${order.orderNumber}`,
             isRead: false
           }).catch(e => console.error('Notification error:', e));
-          
+
           order.paymentStatus = 'refunded';
         }
       }
@@ -603,23 +598,27 @@ exports.cancelOrder = async (req, res) => {
       console.error('Subscription refund error:', subErr);
     }
 
-    // ─── Create Main Cancellation Notification ───
+    await order.save();
+    const io = req.app.get('io');
+    const rider = await releaseAssignedRider(order, io);
+
+    // ─── Cancellation notifications (customer + released rider) ───
     try {
-      await Notification.create({
-        userId: order.userId,
-        type: 'order',
-        title: '🚫 Order Cancelled',
-        message: `Your order #${order.orderNumber} has been successfully cancelled.`,
-        orderId: order._id,
-        isRead: false,
+      await pushNotification.notifyOrderCancelled({
+        order, customer: await loadCustomer(order.userId), rider, reason: 'Cancelled by you', io,
       });
     } catch (notifErr) {
       console.error('Cancellation notification error:', notifErr);
     }
 
-    await order.save();
-    const io = req.app.get('io');
-    if (io) io.to(`seller_${order.sellerId}`).emit('order_cancelled', { orderId: order._id });
+    if (io) {
+      const payload = { orderId: order._id, orderNumber: order.orderNumber, status: 'cancelled', timestamp: new Date() };
+      io.to(`seller_${order.sellerId}`).emit('order_cancelled', { orderId: order._id });
+      io.to(`seller_${order.sellerId}`).emit('order_status_update', payload);
+      io.to(`user_${order.userId}`).emit('order_status_update', payload);
+      io.to(`order_${order._id}`).emit('order_status_update', payload);
+      io.to('delivery_partners').emit('delivery_request_taken', { orderId: order._id, orderNumber: order.orderNumber });
+    }
     res.json({ success: true, order });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -630,147 +629,122 @@ exports.cancelOrder = async (req, res) => {
 exports.updateOrderStatus = async (req, res) => {
   try {
     const { status } = req.body;
-    const order = await Order.findById(req.params.id);
-    if (!order) return res.status(404).json({ message: 'Order not found' });
-    if (order.sellerId.toString() !== req.user.sellerId.toString())
+    const existing = await Order.findById(req.params.id);
+    if (!existing) return res.status(404).json({ message: 'Order not found' });
+    if (existing.sellerId.toString() !== req.user.sellerId.toString())
       return res.status(403).json({ message: 'Unauthorized' });
-    order.status = status;
-    order.statusHistory.push({ 
-      status, 
-      timestamp: new Date(), 
-      updatedBy: status === 'confirmed' ? 'system' : req.user._id 
-    });
+
+    const check = validateSellerTransition(existing, status);
+    if (!check.ok) return res.status(400).json({ success: false, message: check.message });
+
+    const io = req.app.get('io');
+
+    // ─── Restaurant accepts → confirm + offer to nearby riders ──────
+    if (status === 'confirmed') {
+      const confirmed = await confirmOrder(existing._id, { io, updatedBy: req.user._id });
+      if (!confirmed) return res.status(409).json({ success: false, message: 'Order status changed. Please refresh.' });
+      return res.json({ success: true, order: confirmed });
+    }
+
+    // Conditional update so a concurrent rider pickup / customer cancel is never overwritten
+    const now = new Date();
+    const filter = { _id: existing._id, status: existing.status };
+    if (['out_for_delivery', 'delivered'].includes(status)) filter.deliveryPartnerId = null; // self-delivery only
+    if (status === 'cancelled') filter.deliveryStatus = { $ne: 'picked_up' };
+    const set = { status };
+    if (status === 'delivered') {
+      set.actualDelivery = now;
+      if (existing.paymentMethod === 'cod') set.paymentStatus = 'paid';
+    }
+    const order = await Order.findOneAndUpdate(
+      filter,
+      { $set: set, $push: { statusHistory: { status, timestamp: now, updatedBy: req.user._id } } },
+      { new: true },
+    ).populate('sellerId', 'businessName');
+    if (!order) return res.status(409).json({ success: false, message: 'Order status changed. Please refresh.' });
 
     // ─── Send Real-time Status Updates to All Parties ──────
-    const io = req.app.get('io');
-    
-    // Send to user
-    if (order.userId) {
-      io.to(`user_${order.userId}`).emit('order_status_update', {
+    if (io) {
+      const payload = {
         orderId: order._id,
         orderNumber: order.orderNumber,
-        status: status,
-        message: `Order status updated to: ${status}`
-      });
-
-      // ─── Create Notification for User ───
-      await Notification.create({
-        userId: order.userId,
-        type: 'order',
-        title: '📦 Order Status Updated',
-        message: `Your order #${order.orderNumber} is now: ${status.toUpperCase()}`,
-        orderId: order._id,
-        isRead: false,
-      });
-    }
-    
-    // Send to seller
-    if (order.sellerId) {
-      io.to(`seller_${order.sellerId}`).emit('order_status_update', {
-        orderId: order._id,
-        orderNumber: order.orderNumber,
-        status: status,
-        message: `Order status updated to: ${status}`
-      });
-    }
-    
-    // Send to delivery partner if assigned
-    if (order.deliveryPartnerId) {
-      io.to(`delivery_partner_${order.deliveryPartnerId}`).emit('order_status_update', {
-        orderId: order._id,
-        orderNumber: order.orderNumber,
-        status: status,
-        message: `Order status updated to: ${status}`
-      });
-    }
-
-    console.log(`📡 Order ${order.orderNumber} status updated to: ${status}`);
-    console.log(`👥 Notifications sent to: user=${!!order.userId}, seller=${!!order.sellerId}, partner=${!!order.deliveryPartnerId}`);
-
-    // ─── Step 2: Restaurant Accepts Order → Find Delivery Partner ──────
-    if (status === 'confirmed') {
-      console.log(`🍔 Restaurant accepted order ${order.orderNumber}, finding delivery partner...`);
-      console.log(`📍 Restaurant location:`, order.sellerId?.address?.location?.coordinates);
-      console.log(`🏠 Customer location:`, order.deliveryAddress?.location?.coordinates);
-      
-      // Send to delivery partners
-      const io = req.app.get('io');
-      const deliveryResult = await sendOrderToRiders(order._id, io);
-      
-      if (deliveryResult.success) {
-        console.log(`✅ Delivery partner assigned: ${deliveryResult.assignedTo}`);
-      } else {
-        console.log(`⚠️ Delivery assignment failed: ${deliveryResult.message}`);
-        // Order stays confirmed, will be assigned manually
+        status,
+        deliveryStatus: order.deliveryStatus || null,
+        message: `Order status updated to: ${status}`,
+        timestamp: now,
+      };
+      io.to(`user_${order.userId}`).emit('order_status_update', payload);
+      io.to(`order_${order._id}`).emit('order_status_update', payload);
+      io.to(`seller_${req.user.sellerId}`).emit('order_status_update', payload);
+      if (order.deliveryPartnerId) {
+        io.to(`delivery_partner_${order.deliveryPartnerId}`).emit('order_status_update', payload);
       }
     }
+    console.log(`📡 Order ${order.orderNumber} status updated to: ${status}`);
 
-    // ─── Step 3: Restaurant Marks Order Ready → Notify Delivery Partner ──────
+    const customer = await loadCustomer(order.userId);
+
+    if (status === 'preparing') {
+      await pushNotification.createAndSendNotification({
+        userId: order.userId,
+        pushToken: customer?.pushToken || customer?.fcmToken,
+        title: '📦 Order Status Updated',
+        message: `Your order #${order.orderNumber} is now: PREPARING`,
+        type: 'order',
+        orderId: order._id,
+        data: { status: 'preparing', screen: 'Orders' },
+        io,
+        dedupeKey: `${order._id}:preparing:${order.userId}`,
+      });
+    }
+
+    // ─── Restaurant Marks Order Ready → Notify customer + rider ──────
     if (status === 'ready') {
-      console.log(`🍕 Restaurant marked order ${order.orderNumber} as ready, notifying delivery partner...`);
-      
-      // If delivery partner already assigned, notify them to pick up
-      if (order.deliveryPartnerId) {
-        const io = req.app.get('io');
-        
-        // Send real-time notification to assigned delivery partner
-        io.to(`delivery_partner_${order.deliveryPartnerId}`).emit('order_ready', {
+      const rider = order.deliveryPartnerId ? await DeliveryPartner.findById(order.deliveryPartnerId) : null;
+      if (rider && io) {
+        const readyPayload = {
           orderId: order._id,
           orderNumber: order.orderNumber,
           restaurantName: order.sellerId?.businessName,
-          customerName: order.userId?.name,
           message: 'Order is ready for pickup!'
-        });
+        };
+        io.to(`delivery_partner_${rider._id}`).emit('order_ready', readyPayload);
+        io.to(`delivery_partner_${rider.userId}`).emit('order_ready', readyPayload);
+      }
+      await pushNotification.notifyOrderReady({ order, customer, rider, io });
 
-        // Create notification
-        // Get the delivery partner to find their userId
-        const deliveryPartner = await DeliveryPartner.findById(order.deliveryPartnerId);
-        if (deliveryPartner) {
-          await Notification.create({
-            userId: deliveryPartner.userId, // Use deliveryPartner.userId not order.deliveryPartnerId
-            type: 'order_ready',
-            title: '🍕 Order Ready for Pickup',
-            message: `Order #${order.orderNumber} is ready for pickup from ${order.sellerId?.businessName}`,
-            orderId: order._id,
-            isRead: false
-          });
-
-          console.log(`✅ Ready notification sent to delivery partner ${deliveryPartner.name}`);
-        }
-      } else {
-        // If no delivery partner assigned yet, try to assign one now
-        console.log(`📍 No delivery partner assigned, finding one now...`);
-        const io = req.app.get('io');
+      if (!rider) {
+        // No rider accepted yet — offer it again now that food is ready
         const deliveryResult = await sendOrderToRiders(order._id, io);
-        
-        if (deliveryResult.success) {
-          console.log(`✅ Delivery partner assigned on ready: ${deliveryResult.assignedTo}`);
-        } else {
-          console.log(`⚠️ Delivery assignment failed on ready: ${deliveryResult.message}`);
-        }
+        console.log(`🛵 Re-dispatch on ready for ${order.orderNumber}:`, deliveryResult.message || `${deliveryResult.notified || 0} notified`);
       }
     }
 
+    // ─── Seller self-delivery ──────
+    if (status === 'out_for_delivery') {
+      await pushNotification.notifyOutForDelivery({ order, customer, riderName: order.sellerId?.businessName || 'The restaurant', io });
+      if (io) io.to('delivery_partners').emit('delivery_request_taken', { orderId: order._id, orderNumber: order.orderNumber });
+    }
+
     if (status === 'delivered') {
-      order.actualDelivery = new Date();
-      if (order.paymentMethod === 'cod') { order.paymentStatus = 'paid'; await generateInvoice(order); }
+      if (order.paymentMethod === 'cod') { await generateInvoice(order); }
 
       // NEW WALLET SYSTEM: Process payment through wallet controller
       try {
         console.log('💰 Processing order payment through wallet system:', order.orderNumber);
-        
+
         // Only process if payment was made (not COD pending)
         if (order.paymentStatus === 'paid') {
           await walletController.processOrderPayment({
             orderId: order._id,
             userId: order.userId,
-            sellerId: order.sellerId,
+            sellerId: order.sellerId?._id || order.sellerId,
             totalAmount: order.total,
             paymentMethod: order.paymentMethod,
             orderNumber: order.orderNumber,
             itemsCount: order.items?.length || 0
           });
-          
+
           console.log('✅ Order payment processed through wallet system');
         }
       } catch (walletError) {
@@ -779,50 +753,48 @@ exports.updateOrderStatus = async (req, res) => {
         // It can be reconciled later
       }
 
-      // Legacy settlement code removed - now handled by wallet system above
+      // ─── Cashback to customer (2% of order total) ──────
       try {
-        // Keep any additional post-delivery logic here if needed
-        console.log('✅ Order delivered and processed through wallet system');
+        const cashbackRate = 0.02; // 2%
+        const cashback = Math.round(order.total * cashbackRate);
+        if (cashback > 0) {
+          const cbCustomer = await User.findByIdAndUpdate(order.userId, { $inc: { wallet: cashback } }, { new: true });
+          await WalletTransaction.create({
+            userId: order.userId, type: 'credit', amount: cashback,
+            description: `Cashback for order #${order.orderNumber}`,
+            referenceId: order._id.toString(), referenceType: 'order', balance: cbCustomer.wallet,
+          });
+          await Notification.create({
+            userId: order.userId, type: 'wallet',
+            title: 'Cashback Received! 🎉', message: `₹${cashback} cashback credited for order #${order.orderNumber}`,
+          });
+        }
+      } catch (cbErr) { console.error('Cashback error:', cbErr.message); }
 
-        // ─── Cashback to customer (2% of order total) ──────
-        try {
-          const cashbackRate = 0.02; // 2%
-          const cashback = Math.round(order.total * cashbackRate);
-          if (cashback > 0) {
-            const customer = await User.findByIdAndUpdate(order.userId, { $inc: { wallet: cashback } }, { new: true });
-            await WalletTransaction.create({
-              userId: order.userId, type: 'credit', amount: cashback,
-              description: `Cashback for order #${order.orderNumber}`,
-              referenceId: order._id.toString(), referenceType: 'order', balance: customer.wallet,
-            });
-            await Notification.create({
-              userId: order.userId, type: 'wallet',
-              title: 'Cashback Received! 🎉', message: `₹${cashback} cashback credited for order #${order.orderNumber}`,
-            });
-          }
-        } catch (cbErr) { console.error('Cashback error:', cbErr.message); }
-      } catch (settlementErr) {
-        console.error('Settlement creation error:', settlementErr.message);
+      await pushNotification.notifyOrderDelivered({ order, customer, rider: null, io });
+    }
+
+    // ─── Seller cancels → refund to wallet + release rider ──────
+    if (status === 'cancelled') {
+      if (order.paymentStatus === 'paid' && order.paymentMethod !== 'cod') {
+        const user = await User.findByIdAndUpdate(order.userId, { $inc: { wallet: order.total } }, { new: true });
+        await WalletTransaction.create({
+          userId: order.userId, type: 'credit', amount: order.total,
+          description: `Refund for cancelled order #${order.orderNumber}`,
+          referenceId: order._id.toString(), referenceType: 'refund', balance: user.wallet,
+        });
+        order.paymentStatus = 'refunded';
+        await order.save();
+        await Notification.create({
+          userId: order.userId, type: 'wallet',
+          title: 'Refund Credited', message: `₹${order.total} refunded to your wallet for order #${order.orderNumber}`,
+        });
       }
+      const rider = await releaseAssignedRider(order, io);
+      await pushNotification.notifyOrderCancelled({ order, customer, rider, reason: 'Cancelled by the restaurant', io });
+      if (io) io.to('delivery_partners').emit('delivery_request_taken', { orderId: order._id, orderNumber: order.orderNumber });
     }
 
-    // ─── Seller cancels → refund to wallet ──────
-    if (status === 'cancelled' && order.paymentStatus === 'paid' && order.paymentMethod !== 'cod') {
-      const user = await User.findByIdAndUpdate(order.userId, { $inc: { wallet: order.total } }, { new: true });
-      await WalletTransaction.create({
-        userId: order.userId, type: 'credit', amount: order.total,
-        description: `Refund for cancelled order #${order.orderNumber}`,
-        referenceId: order._id.toString(), referenceType: 'refund', balance: user.wallet,
-      });
-      order.paymentStatus = 'refunded';
-      await Notification.create({
-        userId: order.userId, type: 'wallet',
-        title: 'Refund Credited', message: `₹${order.total} refunded to your wallet for order #${order.orderNumber}`,
-      });
-    }
-
-    await order.save();
-    if (io) io.to(`user_${order.userId}`).emit('order_status_update', { orderId: order._id, status });
     res.json({ success: true, order });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

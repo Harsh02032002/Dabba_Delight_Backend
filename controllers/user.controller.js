@@ -416,18 +416,17 @@ exports.getOrderTracking = async (req, res) => {
     const { orderId } = req.params;
     const order = await Order.findById(orderId)
       .populate('sellerId', 'businessName phone address')
-      .populate('deliveryPartnerId', 'name phone vehicleType vehicleNumber currentLocation rating');
+      .populate('deliveryPartnerId', 'userId name phone vehicleType vehicleNumber currentLocation rating');
 
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
-    // Security check: only order owner or delivery or admin can track
-    if (
-      order.userId.toString() !== req.user._id.toString() &&
-      req.user.role !== 'admin' &&
-      req.user.role !== 'delivery'
-    ) {
+    // Security check: only the order owner, its assigned rider, or an admin can track
+    const isOwner = order.userId.toString() === req.user._id.toString();
+    const isAssignedRider = req.user.role === 'delivery' && order.deliveryPartnerId
+      && String(order.deliveryPartnerId.userId) === String(req.user._id);
+    if (!isOwner && !isAssignedRider && req.user.role !== 'admin') {
       return res.status(403).json({ success: false, message: 'Unauthorized to track this order' });
     }
 
@@ -489,6 +488,11 @@ exports.getOrderTracking = async (req, res) => {
         _id: order._id,
         orderNumber: order.orderNumber,
         status: order.status,
+        deliveryStatus: order.deliveryStatus || null,
+        riderAssignedAt: order.riderAssignedAt || null,
+        pickedUpAt: order.pickedUpAt || null,
+        actualDelivery: order.actualDelivery || null,
+        estimatedDelivery: order.estimatedDelivery || null,
         statusHistory: order.statusHistory,
         restaurantName: order.sellerId?.businessName || 'Restaurant',
         restaurantPhone: order.sellerId?.phone || '',
