@@ -107,8 +107,8 @@ async function acceptViaDirectDB() {
   const Order = require('../models/Order');
   const { sendOrderToRiders } = require('../services/delivery-assignment.service');
 
-  // Find Deepak Seller Account
-  const deepakUser = await User.findOne({
+  // Find all Deepak User Accounts and Seller records
+  const deepakUsers = await User.find({
     $or: [
       { email: 'deepak.deoria@gmail.com' },
       { email: 'ravistartek@gmail.com' },
@@ -116,32 +116,25 @@ async function acceptViaDirectDB() {
     ]
   });
 
-  if (!deepakUser) {
-    console.error('❌ Could not find Deepak user account in database.');
-    return;
-  }
-
-  // Find associated Seller record
-  const deepakSeller = await Seller.findOne({
+  const userIds = deepakUsers.map(u => u._id);
+  const deepakSellers = await Seller.find({
     $or: [
-      { userId: deepakUser._id },
-      { email: deepakUser.email },
+      { userId: { $in: userIds } },
+      { email: { $in: ['deepak.deoria@gmail.com', 'ravistartek@gmail.com'] } },
       { restaurantName: { $regex: 'deepak', $options: 'i' } }
     ]
   });
 
-  const sellerId = deepakSeller?._id;
-  const restaurantName = deepakSeller?.restaurantName || deepakSeller?.businessName || 'Deepak Non veg store';
+  const sellerIds = [...new Set([...deepakSellers.map(s => s._id), ...userIds])];
+  const restaurantNames = deepakSellers.map(s => s.restaurantName || s.businessName).filter(Boolean).join(', ') || 'Deepak Non veg store';
 
-  console.log(`🏪 Target Restaurant: "${restaurantName}" (Seller ID: ${sellerId || deepakUser._id})`);
+  console.log(`🏪 Target Restaurant(s): "${restaurantNames}" (${sellerIds.length} Seller IDs tracked)`);
 
   async function processPendingOrders() {
     const query = {
       status: { $in: ['pending', 'placed'] },
+      sellerId: { $in: sellerIds }
     };
-    if (sellerId) {
-      query.sellerId = sellerId;
-    }
 
     const pendingOrders = await Order.find(query).populate('userId', 'name phone email');
 
@@ -161,7 +154,7 @@ async function acceptViaDirectDB() {
       order.statusHistory.push({
         status: 'confirmed',
         timestamp: now,
-        updatedBy: deepakUser._id,
+        updatedBy: deepakUsers[0]?._id || sellerIds[0],
         note: 'Auto-accepted by Deepak restaurant script',
       });
 
