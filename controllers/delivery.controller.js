@@ -165,20 +165,69 @@ const { generateCode } = require('../utils/email.service');
 const { buildIdentifierQuery, sendDualOTP } = require('../utils/sms.service');
 
 async function resolvePartnerAccount(rawInput) {
-  const user = await User.findOne(buildIdentifierQuery(rawInput)).select('+password');
-  if (!user) return { error: { code: 404, message: 'Partner account not found' } };
+  const idQuery = buildIdentifierQuery(rawInput);
 
-  if (user.role !== 'delivery') {
-    const existingPartner = await DeliveryPartner.findOne({ userId: user._id });
-    if (existingPartner) {
-      user.role = 'delivery';
-      await user.save();
-    } else {
-      return { error: { code: 403, message: 'Account is not registered as a delivery partner' } };
+  // 1. Try finding DeliveryPartner directly by phone or email
+  let partner = await DeliveryPartner.findOne(idQuery);
+  let user = null;
+  if (partner && partner.userId) {
+    user = await User.findById(partner.userId).select('+password');
+  }
+
+  // 2. Try finding a User with role: 'delivery' matching this identifier
+  if (!user) {
+    user = await User.findOne({ ...idQuery, role: 'delivery' }).select('+password');
+    if (user && !partner) {
+      partner = await DeliveryPartner.findOne({ userId: user._id });
     }
   }
 
-  let partner = await DeliveryPartner.findOne({ userId: user._id });
+  // 3. Search all matching users to find any that has a DeliveryPartner profile or role: 'delivery'
+  if (!user) {
+    const matchingUsers = await User.find(idQuery).select('+password');
+    for (const cand of matchingUsers) {
+      if (cand.role === 'delivery') {
+        user = cand;
+        partner = await DeliveryPartner.findOne({ userId: cand._id });
+        break;
+      }
+      const existingPartner = await DeliveryPartner.findOne({ userId: cand._id });
+      if (existingPartner) {
+        user = cand;
+        partner = existingPartner;
+        if (user.role !== 'delivery') {
+          user.role = 'delivery';
+          await user.save();
+        }
+        break;
+      }
+    }
+  }
+
+  // 4. Fallback: single user match
+  if (!user) {
+    user = await User.findOne(idQuery).select('+password');
+    if (user) {
+      partner = await DeliveryPartner.findOne({ userId: user._id });
+      if (partner) {
+        if (user.role !== 'delivery') {
+          user.role = 'delivery';
+          await user.save();
+        }
+      } else if (user.role !== 'delivery') {
+        return { error: { code: 403, message: 'This phone number belongs to a customer/seller account. Please register as a Rider Partner or use your registered Rider phone number.' } };
+      }
+    }
+  }
+
+  if (!user) {
+    return { error: { code: 404, message: 'No Rider account found with this Email or Phone Number. Please check the number or register.' } };
+  }
+
+  if (user.isBlocked) {
+    return { error: { code: 403, message: 'Account is blocked' } };
+  }
+
   if (!partner) {
     partner = await DeliveryPartner.create({
       userId: user._id,
@@ -191,10 +240,6 @@ async function resolvePartnerAccount(rawInput) {
 
   if (!user.phone && partner.phone) {
     user.phone = partner.phone;
-  }
-
-  if (user.isBlocked) {
-    return { error: { code: 403, message: 'Account is blocked' } };
   }
 
   return { user, partner };

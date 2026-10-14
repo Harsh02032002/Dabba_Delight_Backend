@@ -151,6 +151,23 @@ async function checkUserPassword(user, password, rawIdentifier) {
   return isMatch;
 }
 
+// Helper: find user by identifier with priority given to requested role (prevents role collisions when phone is shared)
+async function findUserByIdentifierAndRole(rawId, role, selectPassword = false) {
+  const query = buildIdentifierQuery(rawId);
+  if (role) {
+    let q = User.findOne({ ...query, role });
+    if (selectPassword) q = q.select('+password');
+    const roleMatched = await q;
+    if (roleMatched) return roleMatched;
+  }
+  const matchingUsers = await (selectPassword ? User.find(query).select('+password') : User.find(query));
+  if (role && matchingUsers.length > 0) {
+    const matched = matchingUsers.find(u => u.role === role);
+    if (matched) return matched;
+  }
+  return matchingUsers.length > 0 ? matchingUsers[0] : null;
+}
+
 // POST /api/auth/send-login-otp
 exports.sendLoginOtp = async (req, res) => {
   try {
@@ -160,7 +177,7 @@ exports.sendLoginOtp = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Please enter your Email or Phone Number' });
     }
 
-    const user = await User.findOne(buildIdentifierQuery(rawId)).select('+password');
+    const user = await findUserByIdentifierAndRole(rawId, role, true);
     if (!user) {
       return res.status(404).json({ success: false, message: 'No account found with this Email or Phone Number' });
     }
@@ -222,7 +239,7 @@ exports.verifyLoginOtp = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Email/Phone and 6-digit OTP are required' });
     }
 
-    const user = await User.findOne(buildIdentifierQuery(rawId));
+    const user = await findUserByIdentifierAndRole(rawId, role, false);
     if (!user) {
       return res.status(404).json({ success: false, message: 'Account not found' });
     }
@@ -300,7 +317,7 @@ exports.login = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Email/Phone and password required' });
     }
 
-    const user = await User.findOne(buildIdentifierQuery(rawId)).select('+password');
+    const user = await findUserByIdentifierAndRole(rawId, role, true);
     if (!user) return res.status(401).json({ success: false, message: 'Invalid credentials' });
     if (user.isBlocked) return res.status(403).json({ success: false, message: 'Account blocked' });
 

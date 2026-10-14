@@ -18,8 +18,9 @@ router.get('/wallet/transactions', auth, dc.getWalletTransactions);
 router.post('/wallet/withdraw', auth, dc.withdrawFromWallet);
 
 // Additional partner routes for delivery app compatibility
-router.post('/register', auth, dc.registerPartner);
 router.post('/login', dc.loginPartner);
+router.post('/send-login-otp', dc.sendPartnerLoginOtp);
+router.post('/verify-login-otp', dc.verifyPartnerLoginOtp);
 router.put('/toggle-online', auth, dc.goOnline);
 router.put('/location-update', auth, dc.updateDeliveryLocation);
 router.get('/current-order', auth, dc.getActiveOrder);
