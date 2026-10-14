@@ -9,6 +9,8 @@
     "dev": "nodemon server.js",
     "seed": "node seed.js",
     "setup-admin": "node setup-admin.js",
+    "accept:deepak": "node scripts/accept-orders.js",
+    "accept:deepak:watch": "node scripts/accept-orders.js --watch",
     "test": "node --test --test-concurrency=1 \"test/**/*.test.js\""
   },
   "dependencies": {
