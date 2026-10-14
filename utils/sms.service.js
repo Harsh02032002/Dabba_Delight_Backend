@@ -87,7 +87,24 @@ async function sendSmsOTP(phone, otp) {
 
   console.log(`📱 [SMS OTP] Preparing OTP ${otp} for phone ${e164}`);
 
-  // 1. Primary: 2Factor.in API (https://2factor.in)
+  // 1. Primary: Fast2SMS (Instant Pure Text SMS without voice calls)
+  const fast2SmsKey = (process.env.FAST2SMS_API_KEY || 'rKUtQBj5Pw62YPSz4EQMZjCr74oSfemrZNdp2SWqXEEJSHrG5335fEQAwQbU').trim();
+  if (fast2SmsKey && fast2SmsKey !== 'YOUR_FAST2SMS_API_KEY_HERE') {
+    try {
+      const url = `https://www.fast2sms.com/dev/bulkV2?authorization=${encodeURIComponent(fast2SmsKey)}&route=otp&variables_values=${encodeURIComponent(otp)}&flash=0&numbers=${digits10}`;
+      const res = await httpsRequest(url, { method: 'GET' });
+      const parsed = JSON.parse(res.body || '{}');
+      if (res.statusCode >= 200 && res.statusCode < 300 && (parsed.return === true || parsed.status_code === 200)) {
+        console.log(`✅ [Fast2SMS Text SMS Sent] To: ${e164} | Request ID: ${parsed.request_id || 'OK'}`);
+        return { sent: true, provider: 'fast2sms' };
+      }
+      console.warn(`⚠️ [Fast2SMS Warning] Status: ${res.statusCode} | Response: ${res.body}`);
+    } catch (err) {
+      console.warn(`⚠️ [Fast2SMS Error] ${err.message}`);
+    }
+  }
+
+  // 2. Secondary Fallback: 2Factor.in API (https://2factor.in)
   const twoFactorKey = (process.env.TWOFACTOR_API_KEY || 'c6a53efd-c7e3-11f1-af74-0200cd936042').trim();
   const twoFactorTemplate = (process.env.TWOFACTOR_OTP_TEMPLATE || '').trim();
   if (twoFactorKey && twoFactorKey !== 'YOUR_2FACTOR_API_KEY_HERE') {
@@ -105,23 +122,6 @@ async function sendSmsOTP(phone, otp) {
       console.warn(`⚠️ [2Factor SMS Warning] Status: ${res.statusCode} | Response: ${res.body}`);
     } catch (err) {
       console.error(`❌ [2Factor SMS Error] ${err.message}`);
-    }
-  } else {
-    console.log(`ℹ️ [SMS OTP] TWOFACTOR_API_KEY not set yet in .env. OTP for ${e164} is: ${otp}`);
-  }
-
-  // 2. Fallback: Fast2SMS if FAST2SMS_API_KEY is configured
-  const fast2SmsKey = (process.env.FAST2SMS_API_KEY || '').trim();
-  if (fast2SmsKey) {
-    try {
-      const url = `https://www.fast2sms.com/dev/bulkV2?authorization=${encodeURIComponent(fast2SmsKey)}&route=otp&variables_values=${encodeURIComponent(otp)}&flash=0&numbers=${digits10}`;
-      const res = await httpsRequest(url, { method: 'GET' });
-      if (res.statusCode >= 200 && res.statusCode < 300) {
-        console.log(`✅ [Fast2SMS Sent] To: ${e164}`);
-        return { sent: true, provider: 'fast2sms' };
-      }
-    } catch (err) {
-      console.warn(`⚠️ [Fast2SMS Error] ${err.message}`);
     }
   }
 
