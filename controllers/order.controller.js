@@ -179,6 +179,32 @@ exports.placeOrder = async (req, res) => {
 
     const grandTotal = tax.customerPayable;
 
+    // ── Idempotency / Duplicate Order Guard (20 seconds window) ──────────────
+    const recentDuplicate = await Order.findOne({
+      userId: req.user._id,
+      sellerId,
+      total: grandTotal,
+      status: 'pending',
+      createdAt: { $gte: new Date(Date.now() - 20 * 1000) },
+    })
+      .populate('userId', 'name phone email')
+      .populate('sellerId', 'businessName type logo phone email');
+
+    if (recentDuplicate) {
+      console.log(`⚠️ Duplicate placeOrder request prevented within 20s — returning existing order ${recentDuplicate.orderNumber}`);
+      return res.status(200).json({
+        success: true,
+        duplicatePrevented: true,
+        order: recentDuplicate,
+        billing: {
+          grandTotal: recentDuplicate.total,
+          subscriptionUsed: recentDuplicate.subscriptionAmountUsed,
+          daysDeducted: recentDuplicate.subscriptionDaysDeducted,
+          payableAfterSubscription: recentDuplicate.payableAfterSubscription,
+        },
+      });
+    }
+
     const session = await mongoose.startSession({ defaultTransactionOptions: { readPreference: 'primary' } });
     let order;
     try {
@@ -391,35 +417,54 @@ exports.placeOrder = async (req, res) => {
     }
 
     await order.populate('userId', 'name phone email');
-    await order.populate('sellerId', 'businessName type logo phone email');
+    await order.populate('sellerId', 'businessName type logo phone email address gstNumber fssaiLicense');
 
-    try {
-      if (io) {
-        io.to(`seller_${sellerId}`).emit('new_order', {
-          orderId: order._id,
-          orderNumber: order.orderNumber,
-          totalAmount: grandTotal,
-          customerName: order.userId?.name,
-          itemCount: items?.length || 0,
-          timestamp: new Date(),
-        });
+    // Respond immediately to the client so it never times out waiting for Puppeteer PDF generation
+    res.status(201).json({
+      success: true,
+      order,
+      billing: {
+        grandTotal,
+        subscriptionUsed: order.subscriptionAmountUsed,
+        daysDeducted: order.subscriptionDaysDeducted,
+        payableAfterSubscription: order.payableAfterSubscription,
+      },
+    });
+
+    // Run notifications, invoice generation, and auto-confirm timer in the background
+    const userIdForBg = req.user._id;
+    setImmediate(async () => {
+      try {
+        if (io) {
+          io.to(`seller_${sellerId}`).emit('new_order', {
+            orderId: order._id,
+            orderNumber: order.orderNumber,
+            totalAmount: grandTotal,
+            customerName: order.userId?.name,
+            itemCount: items?.length || 0,
+            timestamp: new Date(),
+          });
+        }
+
+        const sellerUser = seller.userId ? await User.findById(seller.userId).select('pushToken fcmToken') : null;
+        const customer = await loadCustomer(userIdForBg);
+        await pushNotification.notifyOrderPlaced({ order, customer, sellerUser, io });
+        console.log(`✅ Order placed notifications sent for order ${order.orderNumber}`);
+
+        // Offer order to nearby online riders immediately on order placement
+        const dispatch = await sendOrderToRiders(order._id, io);
+        console.log(`🛵 Initial rider dispatch for ${order.orderNumber}:`, dispatch.message || `${dispatch.notified || 0} notified`);
+      } catch (notifErr) {
+        console.log(`❌ Failed to send notification: ${notifErr.message}`);
       }
 
-      // Customer + seller notifications (in-app, socket, push)
-      const sellerUser = seller.userId ? await User.findById(seller.userId).select('pushToken fcmToken') : null;
-      const customer = await loadCustomer(req.user._id);
-      await pushNotification.notifyOrderPlaced({ order, customer, sellerUser, io });
-      console.log(`✅ Order placed notifications sent for order ${order.orderNumber}`);
-    } catch (notifErr) {
-      console.log(`❌ Failed to send notification: ${notifErr.message}`);
-    }
-
-    try {
-      await generateInvoice(order);
-      console.log(`✅ Invoice generated for order ${order.orderNumber}`);
-    } catch (invoiceErr) {
-      console.log(`❌ Invoice generation failed for order ${order.orderNumber}:`, invoiceErr.message);
-    }
+      try {
+        await generateInvoice(order);
+        console.log(`✅ Invoice generated for order ${order.orderNumber}`);
+      } catch (invoiceErr) {
+        console.log(`❌ Invoice generation failed for order ${order.orderNumber}:`, invoiceErr.message);
+      }
+    });
 
     const preparationTime = 5 * 60 * 1000;
     const orderRef = order;
@@ -431,17 +476,6 @@ exports.placeOrder = async (req, res) => {
         console.log(`❌ Auto-confirmation failed for order ${orderRef.orderNumber}:`, err.message);
       }
     }, preparationTime);
-
-    res.status(201).json({
-      success: true,
-      order,
-      billing: {
-        grandTotal,
-        subscriptionUsed: order.subscriptionAmountUsed,
-        daysDeducted: order.subscriptionDaysDeducted,
-        payableAfterSubscription: order.payableAfterSubscription,
-      },
-    });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

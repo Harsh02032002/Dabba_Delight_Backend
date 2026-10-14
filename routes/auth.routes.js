@@ -5,6 +5,8 @@ const c = require('../controllers/auth.controller');
 
 router.post('/register', c.register);
 router.post('/login', c.login);
+router.post('/send-login-otp', c.sendLoginOtp);
+router.post('/verify-login-otp', c.verifyLoginOtp);
 router.post('/verify-email', c.verifyEmail);
 router.post('/resend-verification', c.resendVerificationCode);
 router.post('/forgot-password', c.forgotPassword);
@@ -16,3 +18,4 @@ router.post('/profile/avatar', auth, ...s3Upload('avatar', 'avatars'), c.updateA
 router.post('/profile/banner', auth, ...s3Upload('banner', 'banners'), c.updateBanner);
 
 module.exports = router;
+

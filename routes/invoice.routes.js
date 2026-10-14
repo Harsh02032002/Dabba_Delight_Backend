@@ -6,7 +6,7 @@ const ic = require('../controllers/invoice.controller');
 // Token-based auth for invoice download (for frontend direct access)
 const tokenAuth = async (req, res, next) => {
   try {
-    const token = req.query.token;
+    const token = req.query.token || req.header('Authorization')?.replace('Bearer ', '');
     if (!token) {
       return res.status(401).json({ message: 'No token provided' });
     }

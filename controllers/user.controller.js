@@ -472,6 +472,11 @@ exports.getOrderTracking = async (req, res) => {
           lat: dp.currentLocation.coordinates[1],
           lng: dp.currentLocation.coordinates[0],
         };
+      } else if (order.deliveryLocation?.coordinates && Array.isArray(order.deliveryLocation.coordinates) && order.deliveryLocation.coordinates.length === 2) {
+        riderLocation = {
+          lat: order.deliveryLocation.coordinates[1],
+          lng: order.deliveryLocation.coordinates[0],
+        };
       }
       riderInfo = {
         name: dp.name || 'Delivery Partner',

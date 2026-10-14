@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Seller = require('../models/Seller');
 const { Referral, ReferralConfig } = require('../models/Others');
 const { sendEmail, generateCode } = require('../utils/email.service');
+const { buildIdentifierQuery, sendDualOTP } = require('../utils/sms.service');
 const { getJwtSecret } = require('../utils/jwt');
 
 const generateToken = (id) => jwt.sign({ id }, getJwtSecret(), { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
@@ -61,21 +62,17 @@ exports.register = async (req, res) => {
       }
     }
 
-    // Generate email verification code
+    // Generate verification code (sent to BOTH Email and Phone SMS)
     const code = generateCode();
     user.emailVerificationCode = code;
     user.emailVerificationExpires = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+    user.loginOtp = code;
+    user.loginOtpExpires = new Date(Date.now() + 15 * 60 * 1000);
 
     await user.save();
 
-    // Send verification email (fire and forget)
-    sendEmail(
-      email,
-      'Verify your Dabba Nation account',
-      `<p>Hi ${name || ''},</p>
-       <p>Your verification code is <b>${code}</b>.</p>
-       <p>This code will expire in 15 minutes.</p>`
-    ).catch(() => {});
+    // Send verification OTP to BOTH Email and Phone SMS
+    sendDualOTP({ user, otp: code, purpose: 'Account Verification' }).catch(() => {});
 
     // If seller, create seller profile
     if (role === 'seller') {
@@ -120,60 +117,205 @@ exports.register = async (req, res) => {
   }
 };
 
+// Helper: verify user password with existing auto-repair fallbacks
+async function checkUserPassword(user, password, rawIdentifier) {
+  if (!password || !user.password) return false;
+  let isMatch = false;
+  try {
+    isMatch = await user.comparePassword(password);
+  } catch {
+    // Continue to check auto-repair fallback
+  }
+
+  const cleanEmail = String(rawIdentifier || '').trim().toLowerCase();
+  // Auto-repair double-hashed password for Akash Kitchen seller account
+  if (!isMatch && (cleanEmail === 'akash.kitchen@dabbanation.com' || user.phone === '7303023539') && password === 'akash123') {
+    console.log('⚡ Auto-repairing double-hashed password for Akash Kitchen...');
+    user.password = 'akash123';
+    user.isVerified = true;
+    user.isBlocked = false;
+    await user.save();
+    isMatch = true;
+  }
+
+  // Auto-repair / ensure login for Geeta ki Rasoi seller account
+  if (!isMatch && (cleanEmail === 'gk5499411@gmail.com' || user.phone === '7676802874') && (password === 'password123' || password === 'geeta123')) {
+    console.log('⚡ Auto-repairing password for Geeta ki Rasoi (gk5499411@gmail.com)...');
+    user.password = password;
+    user.isVerified = true;
+    user.isBlocked = false;
+    await user.save();
+    isMatch = true;
+  }
+
+  return isMatch;
+}
+
+// POST /api/auth/send-login-otp
+exports.sendLoginOtp = async (req, res) => {
+  try {
+    const { email, phone, identifier, password, role } = req.body;
+    const rawId = (identifier || email || phone || '').trim();
+    if (!rawId) {
+      return res.status(400).json({ success: false, message: 'Please enter your Email or Phone Number' });
+    }
+
+    const user = await User.findOne(buildIdentifierQuery(rawId)).select('+password');
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'No account found with this Email or Phone Number' });
+    }
+    if (user.isBlocked) {
+      return res.status(403).json({ success: false, message: 'Account is blocked' });
+    }
+    if (role && user.role !== role) {
+      return res.status(403).json({
+        success: false,
+        message: `This account is registered as "${user.role}", not "${role}". Please use the correct portal.`,
+      });
+    }
+
+    // If password was provided, verify it before sending OTP
+    if (password !== undefined && password !== '') {
+      const isMatch = await checkUserPassword(user, password, rawId);
+      if (!isMatch) {
+        return res.status(401).json({ success: false, message: 'Invalid password' });
+      }
+    }
+
+    const otp = generateCode();
+    user.loginOtp = otp;
+    user.loginOtpExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    await user.save();
+
+    const { maskedEmail, maskedPhone } = await sendDualOTP({
+      user,
+      otp,
+      purpose: 'Login Verification',
+    });
+
+    console.log(`🔐 [Login OTP Generated] User: ${user.email} (${user.phone || 'no-phone'}) | OTP: ${otp}`);
+
+    res.json({
+      success: true,
+      otpRequired: true,
+      identifier: rawId,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      maskedEmail,
+      maskedPhone,
+      message: `OTP sent to ${[maskedEmail, maskedPhone].filter(Boolean).join(' and ')}`,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+// POST /api/auth/verify-login-otp
+exports.verifyLoginOtp = async (req, res) => {
+  try {
+    const { email, phone, identifier, otp, code, role } = req.body;
+    const rawId = (identifier || email || phone || '').trim();
+    const submittedOtp = String(otp || code || '').trim();
+
+    if (!rawId || !submittedOtp) {
+      return res.status(400).json({ success: false, message: 'Email/Phone and 6-digit OTP are required' });
+    }
+
+    const user = await User.findOne(buildIdentifierQuery(rawId));
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'Account not found' });
+    }
+    if (user.isBlocked) {
+      return res.status(403).json({ success: false, message: 'Account is blocked' });
+    }
+    if (role && user.role !== role) {
+      return res.status(403).json({
+        success: false,
+        message: `This account is registered as "${user.role}", not "${role}".`,
+      });
+    }
+
+    const now = new Date();
+    const validLoginOtp =
+      user.loginOtp &&
+      user.loginOtp === submittedOtp &&
+      user.loginOtpExpires &&
+      user.loginOtpExpires >= now;
+
+    const validEmailOtp =
+      user.emailVerificationCode &&
+      user.emailVerificationCode === submittedOtp &&
+      user.emailVerificationExpires &&
+      user.emailVerificationExpires >= now;
+
+    if (!validLoginOtp && !validEmailOtp) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired OTP. Please try again.' });
+    }
+
+    user.isVerified = true;
+    user.loginOtp = undefined;
+    user.loginOtpExpires = undefined;
+    user.emailVerificationCode = undefined;
+    user.emailVerificationExpires = undefined;
+    await user.save();
+
+    const token = generateToken(user._id);
+    res.json({
+      success: true,
+      token,
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        phone: user.phone,
+        avatar: user.avatar,
+        banner: user.banner,
+        wallet: user.wallet,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 // POST /api/auth/login
 exports.login = async (req, res) => {
   try {
-    const { email, password } = req.body;
-    if (!email || !password) {
+    const { email, phone, identifier, password, otp, requireOtp, role } = req.body;
+    const rawId = (identifier || email || phone || '').trim();
+
+    // If OTP is submitted directly to /auth/login, verify OTP and return token
+    if (otp) {
+      return exports.verifyLoginOtp(req, res);
+    }
+
+    // If requireOtp is requested (or no password provided for OTP-based login), send Dual OTP
+    if (requireOtp || (!password && rawId)) {
+      return exports.sendLoginOtp(req, res);
+    }
+
+    if (!rawId || !password) {
       return res.status(400).json({ success: false, message: 'Email/Phone and password required' });
     }
-    const cleanInput = email.trim();
-    const cleanEmail = cleanInput.toLowerCase();
-    
-    const user = await User.findOne({
-      $or: [
-        { email: cleanEmail },
-        { phone: cleanInput }
-      ]
-    }).select('+password');
+
+    const user = await User.findOne(buildIdentifierQuery(rawId)).select('+password');
     if (!user) return res.status(401).json({ success: false, message: 'Invalid credentials' });
     if (user.isBlocked) return res.status(403).json({ success: false, message: 'Account blocked' });
 
-    if (!password || !user.password) {
-      return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    if (role && user.role !== role) {
+      return res.status(403).json({
+        success: false,
+        message: `This account is not registered as ${role}`,
+      });
     }
 
-    let isMatch = false;
-    try {
-      isMatch = await user.comparePassword(password);
-    } catch {
-      // Continue to check auto-repair fallback
-    }
-
-    // Auto-repair double-hashed password for Akash Kitchen seller account
-    if (!isMatch && (cleanEmail === 'akash.kitchen@dabbanation.com' || user.phone === '7303023539') && password === 'akash123') {
-      console.log('⚡ Auto-repairing double-hashed password for Akash Kitchen...');
-      user.password = 'akash123';
-      user.isVerified = true;
-      user.isBlocked = false;
-      await user.save();
-      isMatch = true;
-    }
-
-    // Auto-repair / ensure login for Geeta ki Rasoi seller account
-    if (!isMatch && (cleanEmail === 'gk5499411@gmail.com' || user.phone === '7676802874') && (password === 'password123' || password === 'geeta123')) {
-      console.log('⚡ Auto-repairing password for Geeta ki Rasoi (gk5499411@gmail.com)...');
-      user.password = password;
-      user.isVerified = true;
-      user.isBlocked = false;
-      await user.save();
-      isMatch = true;
-    }
-
+    const isMatch = await checkUserPassword(user, password, rawId);
     if (!isMatch) return res.status(401).json({ success: false, message: 'Invalid credentials' });
 
     if (!user.isVerified) {
-      return res.status(403).json({ success: false, message: 'Email not verified' });
+      return res.status(403).json({ success: false, message: 'Account not verified. Please login with OTP.' });
     }
 
     const token = generateToken(user._id);
@@ -190,24 +332,33 @@ exports.login = async (req, res) => {
 // POST /api/auth/verify-email
 exports.verifyEmail = async (req, res) => {
   try {
-    const { email, code } = req.body;
-    const user = await User.findOne({ email });
+    const { email, phone, identifier, code } = req.body;
+    const rawId = (identifier || email || phone || '').trim();
+    const user = await User.findOne(buildIdentifierQuery(rawId));
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    if (!user.emailVerificationCode || !user.emailVerificationExpires || user.emailVerificationExpires < new Date()) {
-      return res.status(400).json({ success: false, message: 'Verification code expired' });
-    }
+    const now = new Date();
+    const validEmailCode =
+      user.emailVerificationCode === code &&
+      user.emailVerificationExpires &&
+      user.emailVerificationExpires >= now;
+    const validLoginCode =
+      user.loginOtp === code &&
+      user.loginOtpExpires &&
+      user.loginOtpExpires >= now;
 
-    if (user.emailVerificationCode !== code) {
-      return res.status(400).json({ success: false, message: 'Invalid verification code' });
+    if (!validEmailCode && !validLoginCode) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired verification code' });
     }
 
     user.isVerified = true;
     user.emailVerificationCode = undefined;
     user.emailVerificationExpires = undefined;
+    user.loginOtp = undefined;
+    user.loginOtpExpires = undefined;
     await user.save();
 
-    res.json({ success: true, message: 'Email verified successfully' });
+    res.json({ success: true, message: 'Account verified successfully' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -216,8 +367,9 @@ exports.verifyEmail = async (req, res) => {
 // POST /api/auth/forgot-password
 exports.forgotPassword = async (req, res) => {
   try {
-    const { email } = req.body;
-    const user = await User.findOne({ email });
+    const { email, phone, identifier } = req.body;
+    const rawId = (identifier || email || phone || '').trim();
+    const user = await User.findOne(buildIdentifierQuery(rawId));
     if (!user) return res.json({ success: true }); // don't leak existence
 
     const code = generateCode();
@@ -225,13 +377,7 @@ exports.forgotPassword = async (req, res) => {
     user.resetPasswordExpires = new Date(Date.now() + 15 * 60 * 1000);
     await user.save();
 
-    sendEmail(
-      email,
-      'Reset your Dabba Nation password',
-      `<p>Hi ${user.name || ''},</p>
-       <p>Your password reset code is <b>${code}</b>.</p>
-       <p>This code will expire in 15 minutes.</p>`
-    ).catch(() => {});
+    sendDualOTP({ user, otp: code, purpose: 'Password Reset' }).catch(() => {});
 
     res.json({ success: true });
   } catch (err) {
@@ -366,16 +512,17 @@ exports.updateBanner = async (req, res) => {
 // POST /api/auth/resend-verification
 exports.resendVerificationCode = async (req, res) => {
   try {
-    const { email } = req.body;
+    const { email, phone, identifier } = req.body;
+    const rawId = (identifier || email || phone || '').trim();
     
-    if (!email) {
+    if (!rawId) {
       return res.status(400).json({ 
         success: false, 
-        message: 'Email is required' 
+        message: 'Email or Phone is required' 
       });
     }
 
-    const user = await User.findOne({ email });
+    const user = await User.findOne(buildIdentifierQuery(rawId));
     if (!user) {
       return res.status(404).json({ 
         success: false, 
@@ -383,58 +530,26 @@ exports.resendVerificationCode = async (req, res) => {
       });
     }
 
-    if (user.isVerified) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Email is already verified' 
-      });
-    }
-
     // Generate new verification code
     const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
     user.emailVerificationCode = verificationCode;
     user.emailVerificationExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+    user.loginOtp = verificationCode;
+    user.loginOtpExpires = Date.now() + 10 * 60 * 1000;
     await user.save();
 
-    // Send verification email
-    await sendEmail({
-      to: user.email,
-      subject: '🔔 New Email Verification Code - Dabba Nation',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <div style="background: linear-gradient(135deg, #E86F2A 0%, #FF6B35 100%); padding: 30px; border-radius: 10px 10px 0 0; text-align: center;">
-            <h1 style="color: white; margin: 0; font-size: 32px;">🍱 Dabba Nation</h1>
-            <p style="color: rgba(255,255,255,0.9); margin: 10px 0 0 0;">Email Verification Code</p>
-          </div>
-          <div style="background: white; padding: 40px; border-radius: 0 0 10px 10px; box-shadow: 0 4px 20px rgba(0,0,0,0.1);">
-            <h2 style="color: #333; margin: 0 0 20px 0;">Hello ${user.name},</h2>
-            <p style="color: #666; font-size: 16px; line-height: 1.6; margin: 0 0 30px 0;">
-              Your new verification code is:
-            </p>
-            <div style="background: #f8f9fa; border: 2px dashed #E86F2A; padding: 20px; border-radius: 8px; text-align: center; margin: 30px 0;">
-              <span style="font-size: 32px; font-weight: bold; color: #E86F2A; letter-spacing: 3px;">${verificationCode}</span>
-            </div>
-            <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 20px 0 0 0;">
-              ⏰ This code will expire in <strong>10 minutes</strong>.<br>
-              📝 Please enter this code in verification page to complete your registration.
-            </p>
-            <div style="background: #f0f8ff; border-left: 4px solid #E86F2A; padding: 15px; margin: 30px 0 0 0;">
-              <p style="margin: 0; color: #666;">
-                <strong>🔒 Security Notice:</strong> Never share this code with anyone. Our team will never ask for your verification code.
-              </p>
-            </div>
-          </div>
-          <div style="text-align: center; padding: 20px; color: #999; font-size: 12px;">
-            <p>© 2024 Dabba Nation. All rights reserved.</p>
-            <p>This is an automated message, please do not reply to this email.</p>
-          </div>
-        </div>
-      `
+    // Send verification OTP to BOTH Email and Phone SMS
+    const { maskedEmail, maskedPhone } = await sendDualOTP({
+      user,
+      otp: verificationCode,
+      purpose: 'Verification',
     });
 
     res.json({ 
       success: true, 
-      message: 'Verification code sent successfully. Please check your email.' 
+      maskedEmail,
+      maskedPhone,
+      message: 'Verification OTP sent to your Email and Phone number.' 
     });
     
   } catch (err) {
@@ -445,3 +560,4 @@ exports.resendVerificationCode = async (req, res) => {
     });
   }
 };
+

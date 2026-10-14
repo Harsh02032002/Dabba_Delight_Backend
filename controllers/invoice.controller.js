@@ -36,9 +36,9 @@ exports.downloadInvoice = async (req, res) => {
     console.log('🔍 Download request for order:', req.params.orderId);
     console.log('👤 User requesting invoice:', req.user?._id);
     
-    // First check if order exists
-    const Order = require('../models/Order');
-    const order = await Order.findById(req.params.orderId);
+    const order = await Order.findById(req.params.orderId)
+      .populate('userId', 'name email phone')
+      .populate('sellerId', 'businessName email phone logo type gstNumber fssaiLicense address');
     console.log('📦 Order found:', order ? order.orderNumber : 'NOT FOUND');
     
     if (!order) {
@@ -46,62 +46,59 @@ exports.downloadInvoice = async (req, res) => {
       return res.status(404).json({ message: 'Order not found' });
     }
     
-    // Check if user owns this order
-    if (!order.userId || !req.user || (order.userId.toString() !== req.user._id.toString() && req.user.role !== 'admin')) {
+    // Check if user owns this order (or is admin / seller)
+    const orderUserIdStr = (order.userId?._id || order.userId)?.toString();
+    const reqUserIdStr = req.user?._id?.toString();
+    if (!orderUserIdStr || !reqUserIdStr || (orderUserIdStr !== reqUserIdStr && req.user.role !== 'admin' && req.user.role !== 'seller')) {
       console.log('❌ User not authorized to download this invoice');
-      console.log('📋 Order userId:', order.userId);
-      console.log('📋 Request user ID:', req.user?._id);
-      console.log('📋 User role:', req.user?.role);
       return res.status(403).json({ message: 'Unauthorized to download this invoice' });
     }
-    
-    // Force regeneration to ensure latest template and data
-    console.log(`[${new Date().toISOString()}] 🔄 REGENERATING INVOICE for order: ${req.params.orderId}`);
-    
-    // Set headers to prevent caching of the download/redirect
+
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
 
-    const orderWithDetails = await Order.findById(req.params.orderId)
-      .populate('userId', 'name email phone')
-      .populate('sellerId', 'businessName email phone logo type gstNumber fssaiLicense address');
-    
-    if (!orderWithDetails) {
-      console.log('❌ Order not found for regeneration');
-      return res.status(404).json({ message: 'Order not found' });
+    // Check if an invoice already exists with a local PDF on disk for instant download
+    let invoice = await Invoice.findOne({ orderId: order._id });
+    let localPdfFile = invoice?.invoiceNumber
+      ? path.join(__dirname, '..', 'uploads', 'invoices', `${invoice.invoiceNumber}.pdf`)
+      : null;
+
+    if (!invoice || !localPdfFile || !fs.existsSync(localPdfFile)) {
+      console.log(`[${new Date().toISOString()}] 🔄 Generating invoice PDF for order: ${order.orderNumber}`);
+      invoice = await generateInvoice(order);
+      localPdfFile = path.join(__dirname, '..', 'uploads', 'invoices', `${invoice.invoiceNumber}.pdf`);
     }
 
-    const invoice = await generateInvoice(orderWithDetails);
-    
-    console.log('📁 PDF path:', invoice.pdfPath);
-    
-    // Check if it's an S3 URL or local file
-    if (invoice.pdfPath.startsWith('http')) {
-      // It's an S3 URL, redirect to it
-      console.log('🌐 Redirecting to S3 URL:', invoice.pdfPath);
-      return res.redirect(invoice.pdfPath);
-    } else {
-      // It's a local file (fallback)
-      console.log('📁 Local file path:', invoice.pdfPath);
-      
-      const absolutePath = invoice.pdfPath.startsWith('/') 
-        ? path.join(__dirname, '..', invoice.pdfPath)
-        : invoice.pdfPath;
+    const safeFileName = `Invoice-${order.orderNumber || invoice.invoiceNumber}.pdf`;
 
-      if (!fs.existsSync(absolutePath)) {
-        console.log('❌ Local PDF file not found at path:', absolutePath);
-        return res.status(404).json({ message: 'PDF not found' });
-      }
-      
-      console.log('📤 Streaming local PDF file...');
+    if (localPdfFile && fs.existsSync(localPdfFile)) {
+      console.log('📤 Streaming local PDF file:', localPdfFile);
       res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `attachment; filename=${invoice.invoiceNumber}.pdf`);
-      fs.createReadStream(absolutePath).pipe(res);
+      res.setHeader('Content-Disposition', `attachment; filename="${safeFileName}"`);
+      return fs.createReadStream(localPdfFile).pipe(res);
     }
+
+    if (invoice.pdfPath && invoice.pdfPath.startsWith('http')) {
+      console.log('🌐 Redirecting to remote PDF URL:', invoice.pdfPath);
+      return res.redirect(invoice.pdfPath);
+    }
+
+    const fallbackPath = invoice.pdfPath?.startsWith('/')
+      ? path.join(__dirname, '..', invoice.pdfPath)
+      : invoice.pdfPath;
+
+    if (fallbackPath && fs.existsSync(fallbackPath)) {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${safeFileName}"`);
+      return fs.createReadStream(fallbackPath).pipe(res);
+    }
+
+    return res.status(404).json({ message: 'Invoice PDF file not found' });
   } catch (err) {
     console.log('❌ Download error:', err.message);
     console.log('📋 Error stack:', err.stack);
     res.status(500).json({ success: false, message: err.message });
   }
 };
+

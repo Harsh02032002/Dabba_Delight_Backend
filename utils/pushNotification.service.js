@@ -155,7 +155,7 @@ async function notifyOrderPlaced({ order, customer, sellerUser, io }) {
     await createAndSendNotification({
       userId: customer._id,
       pushToken: userToken(customer),
-      title: '🎉 Order Placed Successfully!',
+      title: 'Order Placed Successfully',
       message: `Your order #${orderNum} for ₹${order.total || order.subtotal} has been received and sent to ${businessNameOf(order, 'the kitchen')}.`,
       type: 'order',
       orderId: order._id,
@@ -169,7 +169,7 @@ async function notifyOrderPlaced({ order, customer, sellerUser, io }) {
     await createAndSendNotification({
       userId: sellerUser._id,
       pushToken: userToken(sellerUser),
-      title: '🍔 New Order Received!',
+      title: 'New Order Received',
       message: `Order #${orderNum} - ₹${order.total || order.subtotal}. Please accept and confirm order.`,
       type: 'new_order',
       orderId: order._id,
@@ -191,7 +191,7 @@ async function notifyRidersNewRequest({ order, riders = [], io }) {
     await createAndSendNotification({
       userId: recipient.userId,
       pushToken: recipient.token,
-      title: '🛵 New Delivery Request Nearby!',
+      title: 'New Delivery Request Nearby',
       message: `Order #${orderNum} from ${businessNameOf(order, 'a restaurant')} is waiting for a delivery partner.`,
       type: 'delivery_request',
       orderId: order._id,
@@ -210,7 +210,7 @@ async function notifyOrderConfirmed({ order, customer, io }) {
   await createAndSendNotification({
     userId: customer._id,
     pushToken: userToken(customer),
-    title: '👨‍🍳 Order Confirmed & Cooking!',
+    title: 'Order Confirmed & Cooking',
     message: `The kitchen has confirmed your order #${orderNumberOf(order)} and started fresh preparation.`,
     type: 'order',
     orderId: order._id,
@@ -230,7 +230,7 @@ async function notifyOrderReady({ order, customer, rider, io }) {
     await createAndSendNotification({
       userId: customer._id,
       pushToken: userToken(customer),
-      title: '✅ Food is Ready!',
+      title: 'Food is Ready',
       message: `Your food for order #${orderNum} is freshly packed and ready for delivery pickup.`,
       type: 'order',
       orderId: order._id,
@@ -245,7 +245,7 @@ async function notifyOrderReady({ order, customer, rider, io }) {
     await createAndSendNotification({
       userId: recipient.userId,
       pushToken: recipient.token,
-      title: '📦 Order Ready for Pickup!',
+      title: 'Order Ready for Pickup',
       message: `Order #${orderNum} is ready at ${businessNameOf(order, 'the restaurant')}. Please pick up.`,
       type: 'delivery',
       orderId: order._id,
@@ -267,7 +267,7 @@ async function notifyOrderAssigned({ order, customer, rider, io }) {
     await createAndSendNotification({
       userId: customer._id,
       pushToken: userToken(customer),
-      title: '🛵 Delivery Partner Assigned!',
+      title: 'Delivery Partner Assigned',
       message: `${riderName} has been assigned to your order #${orderNum} and will deliver it to you.`,
       type: 'delivery',
       orderId: order._id,
@@ -282,7 +282,7 @@ async function notifyOrderAssigned({ order, customer, rider, io }) {
     await createAndSendNotification({
       userId: recipient.userId,
       pushToken: recipient.token,
-      title: '🛵 Order Assigned to You!',
+      title: 'Order Assigned to You',
       message: `You have been assigned order #${orderNum}. Head to ${businessNameOf(order, 'the restaurant')} for pickup.`,
       type: 'delivery',
       orderId: order._id,
@@ -301,7 +301,7 @@ async function notifyOutForDelivery({ order, customer, riderName = 'Rider', io }
   await createAndSendNotification({
     userId: customer._id,
     pushToken: userToken(customer),
-    title: '🛵 Out for Delivery!',
+    title: 'Out for Delivery',
     message: `${riderName} has picked up your order #${orderNumberOf(order)} and is heading to your address!`,
     type: 'order',
     orderId: order._id,
@@ -321,7 +321,7 @@ async function notifyOrderDelivered({ order, customer, rider, io }) {
     await createAndSendNotification({
       userId: customer._id,
       pushToken: userToken(customer),
-      title: '✨ Order Delivered! Enjoy your meal 😋',
+      title: 'Order Delivered! Enjoy your meal',
       message: `Order #${orderNum} has been delivered. Please share your rating and review!`,
       type: 'order',
       orderId: order._id,
@@ -336,7 +336,7 @@ async function notifyOrderDelivered({ order, customer, rider, io }) {
     await createAndSendNotification({
       userId: recipient.userId,
       pushToken: recipient.token,
-      title: '💰 Delivery Completed!',
+      title: 'Delivery Completed',
       message: `Order #${orderNum} successfully delivered. ₹${getRiderPayout(order)} added to your earnings.`,
       type: 'delivery',
       orderId: order._id,
@@ -356,7 +356,7 @@ async function notifyOrderCancelled({ order, customer, rider = null, reason = 'C
     await createAndSendNotification({
       userId: customer._id,
       pushToken: userToken(customer),
-      title: '❌ Order Cancelled',
+      title: 'Order Cancelled',
       message: `Order #${orderNum} was cancelled: ${reason}. Refund will be processed if already paid.`,
       type: 'order',
       orderId: order._id,
@@ -371,7 +371,7 @@ async function notifyOrderCancelled({ order, customer, rider = null, reason = 'C
     await createAndSendNotification({
       userId: recipient.userId,
       pushToken: recipient.token,
-      title: '❌ Order Cancelled',
+      title: 'Order Cancelled',
       message: `Order #${orderNum} was cancelled. You are free to accept other orders.`,
       type: 'delivery',
       orderId: order._id,

@@ -413,15 +413,21 @@ exports.generateInvoice = async (order) => {
     setTimeout(() => { safeRemoveDir(dirToRemove); }, 1000);
   }
 
-  // Upload to S3
-  try {
-    const pdfBuffer = fs.readFileSync(tempPdfPath);
-    const s3Url = await uploadToS3({ originalname: `${invoiceNumber}.pdf`, buffer: pdfBuffer, mimetype: 'application/pdf' }, 'invoices');
-    fs.unlinkSync(tempPdfPath);
-    invoice.pdfPath = s3Url;
-  } catch (err) {
-    invoice.pdfPath = `/uploads/invoices/${invoiceNumber}.pdf`;
-  }
+  // Keep local PDF file in uploads/invoices for instant, reliable streaming download
+  const localRelativePath = `/uploads/invoices/${invoiceNumber}.pdf`;
+  invoice.pdfPath = localRelativePath;
+
+  // Optionally upload backup copy to Cloudinary in the background without deleting local file
+  setImmediate(async () => {
+    try {
+      if (fs.existsSync(tempPdfPath)) {
+        const pdfBuffer = fs.readFileSync(tempPdfPath);
+        await uploadToS3({ originalname: `${invoiceNumber}.pdf`, buffer: pdfBuffer, mimetype: 'application/pdf' }, 'invoices');
+      }
+    } catch (_) {
+      // Local file is already saved and used for downloads
+    }
+  });
 
   const invoiceData = invoice.toObject();
   delete invoiceData._id;

@@ -22,6 +22,8 @@ const userSchema = new mongoose.Schema({
   pushToken: String,
   emailVerificationCode: String,
   emailVerificationExpires: Date,
+  loginOtp: String,
+  loginOtpExpires: Date,
   resetPasswordCode: String,
   resetPasswordExpires: Date,
 }, { timestamps: true });

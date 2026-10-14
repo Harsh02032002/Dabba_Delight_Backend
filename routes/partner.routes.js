@@ -5,8 +5,10 @@ const dc = require('../controllers/delivery.controller');
 // Partner registration (no auth required)
 router.post('/register', dc.registerPartner);
 
-// Partner login (no auth required)
+// Partner login & Dual OTP (no auth required)
 router.post('/login', dc.loginPartner);
+router.post('/send-login-otp', dc.sendPartnerLoginOtp);
+router.post('/verify-login-otp', dc.verifyPartnerLoginOtp);
 
 // Authenticated partner routes
 router.use(auth);
@@ -43,21 +45,21 @@ router.post('/push-token', async (req, res) => {
     const tokenToSave = pushToken || fcmToken;
     if (!tokenToSave) return res.status(400).json({ success: false, message: 'Push token required' });
     
-    const partnerId = req.user.deliveryPartnerId || req.user._id;
     const { DeliveryPartner } = require('../models/Others');
     const User = require('../models/User');
 
-    await DeliveryPartner.findByIdAndUpdate(partnerId, {
-      fcmToken: tokenToSave,
-      pushToken: tokenToSave,
-    });
+    const partnerDoc = await DeliveryPartner.findOneAndUpdate(
+      { $or: [{ userId: req.user._id }, { _id: req.user.deliveryPartnerId || req.user._id }] },
+      { fcmToken: tokenToSave, pushToken: tokenToSave },
+      { new: true }
+    );
 
     await User.findByIdAndUpdate(req.user._id, {
       fcmToken: tokenToSave,
       pushToken: tokenToSave,
     });
 
-    console.log(`📱 [Rider Push Token Registered] partner: ${partnerId}`);
+    console.log(`📱 [Rider Push Token Registered] partner: ${partnerDoc?._id || req.user._id}`);
     res.json({ success: true, message: 'Rider push token registered successfully' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

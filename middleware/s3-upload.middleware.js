@@ -31,10 +31,11 @@ function ensureCloudinaryConfigured() {
 const memoryStorage = multer.memoryStorage();
 
 const fileFilter = (req, file, cb) => {
-  const allowed = /jpeg|jpg|png|gif|webp|pdf/;
-  const ext = allowed.test(path.extname(file.originalname).toLowerCase());
-  const mime = allowed.test(file.mimetype);
-  if (ext && mime) cb(null, true);
+  const allowedExt = /jpeg|jpg|png|gif|webp|heic|heif|avif|pdf/;
+  const allowedMime = /image\/(jpeg|jpg|png|gif|webp|heic|heif|avif)|application\/pdf|application\/octet-stream/;
+  const ext = allowedExt.test(path.extname(file.originalname || '').toLowerCase());
+  const mime = allowedMime.test((file.mimetype || '').toLowerCase());
+  if (ext || mime) cb(null, true);
   else cb(new Error('Only image and PDF files are allowed'));
 };
 
@@ -50,32 +51,42 @@ async function uploadToS3(file, folder = 'products') {
 }
 
 async function uploadToCloudinary(file, folder = 'products') {
-  ensureCloudinaryConfigured();
+  try {
+    ensureCloudinaryConfigured();
 
-  return new Promise((resolve, reject) => {
-    const uniqueId = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
-    const publicId = `${folder}/${uniqueId}`;
+    return await new Promise((resolve, reject) => {
+      const uniqueId = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
 
-    const isPdf = file.mimetype === 'application/pdf' || path.extname(file.originalname).toLowerCase() === '.pdf';
+      const isPdf = file.mimetype === 'application/pdf' || path.extname(file.originalname || '').toLowerCase() === '.pdf';
 
-    const uploadStream = cloudinary.uploader.upload_stream(
-      {
-        folder,
-        public_id: uniqueId,
-        resource_type: isPdf ? 'raw' : 'image',
-        ...(isPdf ? {} : { transformation: [{ quality: 'auto', fetch_format: 'auto' }] }),
-      },
-      (error, result) => {
-        if (error) return reject(error);
-        resolve(result.secure_url);
-      }
-    );
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder,
+          public_id: uniqueId,
+          resource_type: isPdf ? 'raw' : 'image',
+          ...(isPdf ? {} : { transformation: [{ quality: 'auto', fetch_format: 'auto' }] }),
+        },
+        (error, result) => {
+          if (error) return reject(error);
+          resolve(result.secure_url);
+        }
+      );
 
-    const readable = new Readable();
-    readable.push(file.buffer);
-    readable.push(null);
-    readable.pipe(uploadStream);
-  });
+      const readable = new Readable();
+      readable.push(file.buffer);
+      readable.push(null);
+      readable.pipe(uploadStream);
+    });
+  } catch (err) {
+    console.warn('⚠️ Cloudinary upload failed, falling back to local disk:', err.message);
+    const fs = require('fs');
+    const ext = path.extname(file.originalname || '') || (file.mimetype === 'image/png' ? '.png' : '.jpg');
+    const fileName = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}${ext}`;
+    const targetDir = path.join(__dirname, '..', 'uploads', folder);
+    if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+    fs.writeFileSync(path.join(targetDir, fileName), file.buffer);
+    return `/uploads/${folder}/${fileName}`;
+  }
 }
 
 // ─── Cloudinary Delete Helper ───────────────────

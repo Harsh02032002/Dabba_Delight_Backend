@@ -18,7 +18,7 @@ const DELIVERY_STATUSES = ['assigned', 'arrived_at_restaurant', 'picked_up', 'de
 const TERMINAL_STATUSES = ['delivered', 'cancelled'];
 
 /** Kitchen states in which an unassigned order is offered to riders */
-const RIDER_ELIGIBLE_STATUSES = ['confirmed', 'preparing', 'ready'];
+const RIDER_ELIGIBLE_STATUSES = ['pending', 'confirmed', 'preparing', 'ready'];
 
 /** Max simultaneous active deliveries per rider (existing model holds one activeOrderId) */
 const MAX_ACTIVE_ORDERS_PER_RIDER = 1;

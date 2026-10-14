@@ -161,82 +161,170 @@ async function creditRiderDeliveryFee(partner, order) {
   }
 }
 
-exports.loginPartner = async (req, res) => {
+const { generateCode } = require('../utils/email.service');
+const { buildIdentifierQuery, sendDualOTP } = require('../utils/sms.service');
+
+async function resolvePartnerAccount(rawInput) {
+  const user = await User.findOne(buildIdentifierQuery(rawInput)).select('+password');
+  if (!user) return { error: { code: 404, message: 'Partner account not found' } };
+
+  if (user.role !== 'delivery') {
+    const existingPartner = await DeliveryPartner.findOne({ userId: user._id });
+    if (existingPartner) {
+      user.role = 'delivery';
+      await user.save();
+    } else {
+      return { error: { code: 403, message: 'Account is not registered as a delivery partner' } };
+    }
+  }
+
+  let partner = await DeliveryPartner.findOne({ userId: user._id });
+  if (!partner) {
+    partner = await DeliveryPartner.create({
+      userId: user._id,
+      name: user.name || 'Partner',
+      phone: user.phone || user.email,
+      email: user.email,
+      currentLocation: { type: 'Point', coordinates: [0, 0] },
+    });
+  }
+
+  if (!user.phone && partner.phone) {
+    user.phone = partner.phone;
+  }
+
+  if (user.isBlocked) {
+    return { error: { code: 403, message: 'Account is blocked' } };
+  }
+
+  return { user, partner };
+}
+
+exports.sendPartnerLoginOtp = async (req, res) => {
   try {
-    const { email, password } = req.body;
-    
-    // Validate input
-    if (!email || !password) {
-      return res.status(400).json({ success: false, message: 'Email and password required' });
+    const { email, phone, identifier, password } = req.body;
+    const rawId = (identifier || email || phone || '').trim();
+    if (!rawId) {
+      return res.status(400).json({ success: false, message: 'Please enter your Email or Phone Number' });
     }
 
-    const cleanInput = email.trim();
-    const cleanEmail = cleanInput.toLowerCase();
-    
-    // Find user with delivery role or by email/phone
-    let user = await User.findOne({
-      $or: [
-        { email: cleanEmail },
-        { phone: cleanInput }
-      ]
-    }).select('+password');
+    const { user, partner, error } = await resolvePartnerAccount(rawId);
+    if (error) return res.status(error.code).json({ success: false, message: error.message });
 
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'Partner account not found' });
-    }
-
-    // Ensure role is delivery or update/allow if they have partner profile
-    if (user.role !== 'delivery') {
-      const existingPartner = await DeliveryPartner.findOne({ userId: user._id });
-      if (existingPartner) {
-        user.role = 'delivery';
-        await user.save();
-      } else {
-        return res.status(403).json({ success: false, message: 'Account is not registered as a delivery partner' });
+    if (password !== undefined && password !== '') {
+      const isPasswordValid = await user.comparePassword(password);
+      if (!isPasswordValid) {
+        return res.status(401).json({ success: false, message: 'Invalid password' });
       }
     }
 
-    // Find or auto-create partner profile if missing
-    let partner = await DeliveryPartner.findOne({ userId: user._id });
-    if (!partner) {
-      console.log(`⚠️ DeliveryPartner profile missing for ${user.email}, auto-creating...`);
-      partner = await DeliveryPartner.create({
-        userId: user._id,
-        name: user.name || 'Partner',
-        phone: user.phone || user.email,
+    const otp = generateCode();
+    user.loginOtp = otp;
+    user.loginOtpExpires = new Date(Date.now() + 10 * 60 * 1000);
+    await user.save();
+
+    const { maskedEmail, maskedPhone } = await sendDualOTP({
+      user: {
+        name: user.name || partner.name,
+        email: user.email || partner.email,
+        phone: user.phone || partner.phone,
+      },
+      otp,
+      purpose: 'Rider Login Verification',
+    });
+
+    console.log(`🛵 [Rider Login OTP] Partner: ${user.email} (${user.phone || partner.phone}) | OTP: ${otp}`);
+
+    res.json({
+      success: true,
+      otpRequired: true,
+      identifier: rawId,
+      email: user.email,
+      phone: user.phone || partner.phone,
+      maskedEmail,
+      maskedPhone,
+      message: `OTP sent to ${[maskedEmail, maskedPhone].filter(Boolean).join(' and ')}`,
+    });
+  } catch (err) {
+    console.error('Partner send OTP error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.verifyPartnerLoginOtp = async (req, res) => {
+  try {
+    const { email, phone, identifier, otp, code } = req.body;
+    const rawId = (identifier || email || phone || '').trim();
+    const submittedOtp = String(otp || code || '').trim();
+
+    if (!rawId || !submittedOtp) {
+      return res.status(400).json({ success: false, message: 'Email/Phone and 6-digit OTP are required' });
+    }
+
+    const { user, partner, error } = await resolvePartnerAccount(rawId);
+    if (error) return res.status(error.code).json({ success: false, message: error.message });
+
+    const now = new Date();
+    const validLoginOtp =
+      user.loginOtp &&
+      user.loginOtp === submittedOtp &&
+      user.loginOtpExpires &&
+      user.loginOtpExpires >= now;
+
+    if (!validLoginOtp) {
+      return res.status(400).json({ success: false, message: 'Invalid or expired OTP. Please try again.' });
+    }
+
+    user.isVerified = true;
+    user.loginOtp = undefined;
+    user.loginOtpExpires = undefined;
+    await user.save();
+
+    const token = user.generateJWT();
+    res.json({
+      success: true,
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
         email: user.email,
-        currentLocation: {
-          type: 'Point',
-          coordinates: [0, 0]
-        }
-      });
+        phone: user.phone,
+        role: user.role,
+      },
+      partner,
+    });
+  } catch (err) {
+    console.error('Partner verify OTP error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.loginPartner = async (req, res) => {
+  try {
+    const { email, phone, identifier, password, otp, requireOtp } = req.body;
+    const rawId = (identifier || email || phone || '').trim();
+
+    if (otp) {
+      return exports.verifyPartnerLoginOtp(req, res);
     }
-    
-    // Check if user is blocked
-    if (user.isBlocked) {
-      return res.status(403).json({ success: false, message: 'Account is blocked' });
+
+    if (requireOtp || (!password && rawId)) {
+      return exports.sendPartnerLoginOtp(req, res);
     }
-    
-    // Debug: Check if password is available
-    console.log('🔐 Password check:');
-    console.log('Password available:', !!user.password);
-    console.log('Password length:', user.password?.length || 0);
-    
-    // Compare password using bcrypt
+
+    if (!rawId || !password) {
+      return res.status(400).json({ success: false, message: 'Email/Phone and password required' });
+    }
+
+    const { user, partner, error } = await resolvePartnerAccount(rawId);
+    if (error) return res.status(error.code).json({ success: false, message: error.message });
+
     const isPasswordValid = await user.comparePassword(password);
     if (!isPasswordValid) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
-    
-    // Generate JWT token with error handling
-    let token;
-    try {
-      token = user.generateJWT();
-    } catch (jwtError) {
-      console.error('JWT generation failed:', jwtError);
-      return res.status(500).json({ success: false, message: 'Token generation failed' });
-    }
-    
+
+    const token = user.generateJWT();
     res.json({ 
       success: true, 
       token,
@@ -244,6 +332,7 @@ exports.loginPartner = async (req, res) => {
         id: user._id,
         name: user.name,
         email: user.email,
+        phone: user.phone,
         role: user.role
       },
       partner 

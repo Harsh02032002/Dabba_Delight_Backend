@@ -129,6 +129,10 @@ if (!process.env.CLOUDINARY_API_SECRET) {
   console.log('🔄 Using fallback CLOUDINARY_API_SECRET');
 }
 
+if (!process.env.TWOFACTOR_API_KEY) {
+  process.env.TWOFACTOR_API_KEY = 'c6a53efd-c7e3-11f1-af74-0200cd936042';
+}
+
 if (!process.env.BACKEND_URL) {
   process.env.BACKEND_URL = process.env.NODE_ENV === 'production' ? 'https://api.dabbanation.in' : `http://localhost:${process.env.PORT || 5000}`;
   console.log('🔄 Using fallback BACKEND_URL:', process.env.BACKEND_URL);
@@ -345,6 +349,8 @@ io.on('connection', async (socket) => {
   socket.on('locationUpdate', async (data) => {
     const lat = Number(data?.lat ?? data?.latitude);
     const lng = Number(data?.lng ?? data?.longitude);
+    const heading = data?.heading != null && !isNaN(Number(data.heading)) ? Number(data.heading) : null;
+    const speed = data?.speed != null && !isNaN(Number(data.speed)) ? Number(data.speed) : null;
     const orderId = data?.orderId;
 
     if (!isNaN(lat) && !isNaN(lng) && socket.userId) {
@@ -363,13 +369,27 @@ io.on('connection', async (socket) => {
         const targetOrderId = orderId || partner?.activeOrderId;
         if (targetOrderId && partner) {
           // Only relay the location for an order this rider is actually delivering
-          const ord = await Order.findOne({ _id: targetOrderId, deliveryPartnerId: partner._id }).select('userId status').lean();
-          if (ord && !['delivered', 'cancelled'].includes(ord.status)) {
+          const ord = await Order.findOneAndUpdate(
+            { _id: targetOrderId, deliveryPartnerId: partner._id, status: { $nin: ['delivered', 'cancelled'] } },
+            {
+              $set: {
+                'deliveryLocation.type': 'Point',
+                'deliveryLocation.coordinates': [lng, lat]
+              }
+            },
+            { new: true }
+          ).select('userId status deliveryStatus').lean();
+
+          if (ord) {
             const payload = {
               orderId: targetOrderId,
               partnerId: partner._id,
               lat,
               lng,
+              heading,
+              speed,
+              status: ord.status,
+              deliveryStatus: ord.deliveryStatus || null,
               timestamp: new Date()
             };
             io.to(`order_${targetOrderId}`).emit('delivery_location_update', payload);
@@ -386,6 +406,8 @@ io.on('connection', async (socket) => {
       partnerId: socket.userId,
       lat,
       lng,
+      heading,
+      speed,
       timestamp: new Date()
     });
   });
@@ -407,7 +429,7 @@ io.on('connection', async (socket) => {
     try {
       const order = await Order.findById(orderId)
         .populate('sellerId', 'businessName address phone')
-        .populate('deliveryPartnerId', 'name phone vehicleType currentLocation rating');
+        .populate('deliveryPartnerId', 'name phone vehicleType vehicleNumber currentLocation rating');
 
       if (!order) {
         return socket.emit('track_order_error', { message: 'Order not found' });
@@ -432,11 +454,17 @@ io.on('connection', async (socket) => {
             lat: dp.currentLocation.coordinates[1],
             lng: dp.currentLocation.coordinates[0],
           };
+        } else if (order.deliveryLocation?.coordinates && Array.isArray(order.deliveryLocation.coordinates) && order.deliveryLocation.coordinates.length === 2) {
+          riderLocation = {
+            lat: order.deliveryLocation.coordinates[1],
+            lng: order.deliveryLocation.coordinates[0],
+          };
         }
         riderInfo = {
           name: dp.name || 'Delivery Partner',
           phone: dp.phone,
           vehicleType: dp.vehicleType || 'bike',
+          vehicleNumber: dp.vehicleNumber || '',
           rating: dp.rating || 5.0,
         };
       }
