@@ -89,13 +89,17 @@ async function sendSmsOTP(phone, otp) {
 
   // 1. Primary: 2Factor.in API (https://2factor.in)
   const twoFactorKey = (process.env.TWOFACTOR_API_KEY || 'c6a53efd-c7e3-11f1-af74-0200cd936042').trim();
+  const twoFactorTemplate = (process.env.TWOFACTOR_OTP_TEMPLATE || '').trim();
   if (twoFactorKey && twoFactorKey !== 'YOUR_2FACTOR_API_KEY_HERE') {
     try {
-      const url = `https://2factor.in/API/V1/${encodeURIComponent(twoFactorKey)}/SMS/${digits10}/${encodeURIComponent(otp)}`;
+      // 2Factor expects international format: +91XXXXXXXXXX or 91XXXXXXXXXX
+      const targetPhone = e164 || `+91${digits10}`;
+      const templateSuffix = twoFactorTemplate ? `/${encodeURIComponent(twoFactorTemplate)}` : '';
+      const url = `https://2factor.in/API/V1/${encodeURIComponent(twoFactorKey)}/SMS/${encodeURIComponent(targetPhone)}/${encodeURIComponent(otp)}${templateSuffix}`;
       const res = await httpsRequest(url, { method: 'GET' });
       const parsed = JSON.parse(res.body || '{}');
       if (res.statusCode >= 200 && res.statusCode < 300 && parsed.Status === 'Success') {
-        console.log(`✅ [2Factor SMS Sent] To: ${e164} | Session: ${parsed.Details}`);
+        console.log(`✅ [2Factor SMS Sent] To: ${targetPhone} | Session: ${parsed.Details}`);
         return { sent: true, provider: '2factor' };
       }
       console.warn(`⚠️ [2Factor SMS Warning] Status: ${res.statusCode} | Response: ${res.body}`);
