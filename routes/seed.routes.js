@@ -1023,11 +1023,17 @@ const seedAllHandler = async (req, res) => {
   }
 };
 
-router.get('/seed-all', seedAllHandler);
-router.post('/seed-all', seedAllHandler);
-router.get('/seed-sellers', seedAllHandler);
-router.post('/seed-sellers', seedAllHandler);
-router.get('/seed-menus', seedAllHandler);
-router.post('/seed-menus', seedAllHandler);
+// The seed handler DELETES all sellers, products and orders. It must never be reachable
+// on a live server: admin only, POST only, and disabled unless ALLOW_DB_SEED=true.
+const adminAuth = require('../middleware/admin.middleware');
+const seedGuard = (req, res, next) => {
+  if (process.env.ALLOW_DB_SEED !== 'true') {
+    return res.status(404).json({ success: false, message: 'Not found' });
+  }
+  next();
+};
+router.post('/seed-all', seedGuard, adminAuth, seedAllHandler);
+router.post('/seed-sellers', seedGuard, adminAuth, seedAllHandler);
+router.post('/seed-menus', seedGuard, adminAuth, seedAllHandler);
 
 module.exports = router;

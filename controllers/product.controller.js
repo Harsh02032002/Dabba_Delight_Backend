@@ -1,6 +1,8 @@
 const Product = require('../models/Product');
 const Seller = require('../models/Seller');
 const { deleteFromS3 } = require('../middleware/s3-upload.middleware');
+const { sanitizeProductInput, validateProductInput } = require('../utils/productRules');
+const { ELIGIBLE_SELLER_FILTER } = require('../utils/sellerGeo');
 
 // GET /api/products
 exports.getProducts = async (req, res) => {
@@ -47,6 +49,21 @@ exports.getProducts = async (req, res) => {
     if (req.query.approvedOnly === 'true') filter.isAdminApproved = true;
     filter.status = { $ne: 'archived' };
 
+    // Who is asking decides what they may see (route uses optional auth):
+    // - seller: only their own items (any availability)
+    // - admin: everything
+    // - anyone else: only orderable items of approved sellers
+    if (req.seller && !req.admin) {
+      filter.sellerId = req.seller._id;
+    } else if (!req.admin) {
+      const eligibleIds = (await Seller.find(ELIGIBLE_SELLER_FILTER).distinct('_id')).map(String);
+      const requested = filter.sellerId?.$in ? filter.sellerId.$in.map(String)
+        : (filter.sellerId && typeof filter.sellerId !== 'object') ? [String(filter.sellerId)] : null;
+      filter.sellerId = { $in: requested ? requested.filter(id => eligibleIds.includes(id)) : eligibleIds };
+      filter.isAvailable = true;
+      filter.status = { $nin: ['draft', 'archived'] };
+    }
+
     const products = await Product.find(filter)
       .populate('sellerId', 'businessName type logo rating address')
       .sort(sort).limit(Number(limit)).skip((Number(page) - 1) * Number(limit));
@@ -69,12 +86,18 @@ const getSellerQuery = (req, extra = {}) => {
 // POST /api/products
 exports.createProduct = async (req, res) => {
   try {
-    const data = req.body;
+    const checked = validateProductInput(sanitizeProductInput(req.body));
+    if (!checked.ok) return res.status(400).json({ success: false, message: checked.message, field: checked.field });
+    const data = checked.value;
     if (req.file && (req.file.s3Url || req.file.path)) data.image = req.file.s3Url || req.file.path;
-    if (!data.sellerId && req.seller) data.sellerId = req.seller._id;
-    if (!data.sellerId && req.admin) {
-      const firstSeller = await Seller.findOne();
-      if (firstSeller) data.sellerId = firstSeller._id;
+
+    // Sellers always create items for themselves; admins must name the seller explicitly
+    if (req.admin) {
+      const target = req.body.sellerId && await Seller.findById(req.body.sellerId).select('_id').catch(() => null);
+      if (!target) return res.status(400).json({ success: false, message: 'Choose the seller this item belongs to', field: 'sellerId' });
+      data.sellerId = target._id;
+    } else {
+      data.sellerId = req.seller._id;
     }
     const product = await Product.create(data);
     res.status(201).json({ success: true, product });
@@ -86,7 +109,9 @@ exports.createProduct = async (req, res) => {
 // PUT /api/products/:id
 exports.updateProduct = async (req, res) => {
   try {
-    const data = req.body;
+    const checked = validateProductInput(sanitizeProductInput(req.body), { partial: true });
+    if (!checked.ok) return res.status(400).json({ success: false, message: checked.message, field: checked.field });
+    const data = checked.value;
     if (req.file && (req.file.s3Url || req.file.path)) data.image = req.file.s3Url || req.file.path;
     const query = getSellerQuery(req, { _id: req.params.id });
     const product = await Product.findOneAndUpdate(query, data, { new: true });
@@ -117,6 +142,7 @@ exports.markOutOfStock = async (req, res) => {
       getSellerQuery(req, { _id: req.params.id }),
       { isAvailable: false }, { new: true }
     );
+    if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
     res.json({ success: true, product });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -130,6 +156,7 @@ exports.markInStock = async (req, res) => {
       getSellerQuery(req, { _id: req.params.id }),
       { isAvailable: true }, { new: true }
     );
+    if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
     res.json({ success: true, product });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -139,11 +166,13 @@ exports.markInStock = async (req, res) => {
 // PATCH /api/products/:id/price
 exports.updatePrice = async (req, res) => {
   try {
-    const { sellingPrice } = req.body;
+    const checked = validateProductInput({ sellingPrice: req.body.sellingPrice }, { partial: true });
+    if (!checked.ok) return res.status(400).json({ success: false, message: checked.message, field: checked.field });
     const product = await Product.findOneAndUpdate(
       getSellerQuery(req, { _id: req.params.id }),
-      { sellingPrice }, { new: true }
+      { sellingPrice: checked.value.sellingPrice }, { new: true }
     );
+    if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
     res.json({ success: true, product });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -180,7 +209,18 @@ exports.toggleVeg = async (req, res) => {
 // POST /api/products/bulk/create
 exports.bulkCreate = async (req, res) => {
   try {
-    const items = req.body.map(item => ({ ...item, sellerId: item.sellerId || req.seller?._id }));
+    if (!Array.isArray(req.body) || req.body.length === 0) {
+      return res.status(400).json({ success: false, message: 'Send a non-empty list of items' });
+    }
+    if (!req.seller || req.admin) {
+      return res.status(403).json({ success: false, message: 'Bulk create is available to sellers for their own menu' });
+    }
+    const items = [];
+    for (let i = 0; i < req.body.length; i += 1) {
+      const checked = validateProductInput(sanitizeProductInput(req.body[i]));
+      if (!checked.ok) return res.status(400).json({ success: false, message: `Row ${i + 1}: ${checked.message}`, field: checked.field });
+      items.push({ ...checked.value, sellerId: req.seller._id });
+    }
     const products = await Product.insertMany(items);
     res.status(201).json({ success: true, count: products.length, products });
   } catch (err) {
@@ -191,9 +231,13 @@ exports.bulkCreate = async (req, res) => {
 // PUT /api/products/bulk/update
 exports.bulkUpdate = async (req, res) => {
   try {
-    const ops = req.body.map(item => ({
-      updateOne: { filter: getSellerQuery(req, { _id: item._id }), update: { $set: item } },
-    }));
+    if (!Array.isArray(req.body)) return res.status(400).json({ success: false, message: 'Send a list of items' });
+    const ops = [];
+    for (const item of req.body) {
+      const checked = validateProductInput(sanitizeProductInput(item), { partial: true });
+      if (!checked.ok) return res.status(400).json({ success: false, message: checked.message, field: checked.field });
+      ops.push({ updateOne: { filter: getSellerQuery(req, { _id: item._id }), update: { $set: checked.value } } });
+    }
     const result = await Product.bulkWrite(ops);
     res.json({ success: true, modified: result.modifiedCount });
   } catch (err) {

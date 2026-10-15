@@ -4,6 +4,7 @@ const path = require('path');
 const puppeteer = require('puppeteer');
 const { Invoice, PlatformConfig } = require('../models/Others');
 const { uploadToS3 } = require('../middleware/s3-upload.middleware');
+const { buildOrderReceipt } = require('./order-receipt.service');
 
 // ─── PUPPETEER HELPERS (Windows-safe) ────────────────────
 // Chrome on Windows keeps `lockfile` open for a moment after exit. If Puppeteer owns the
@@ -82,28 +83,9 @@ const prepareOrderData = async (order, invoiceNumber) => {
   const gstVal = rawGst && rawGst !== 'N/A' && rawGst !== '0' && rawGst !== 'undefined' ? rawGst : null;
   const fssaiVal = rawFssai && rawFssai !== 'N/A' && rawFssai !== '0' && rawFssai !== 'undefined' ? rawFssai : null;
 
-  const subtotal = Number(order.subtotal) || 0;
-  const discount = Number(order.discount) || 0;
-
-  // Dynamic Delivery fee from order or Admin PlatformConfig database
-  let deliveryFee = Number(order.deliveryFee);
-  if (!Number.isFinite(deliveryFee)) {
-    try {
-      const platformDoc = await PlatformConfig.findOne();
-      deliveryFee = platformDoc && platformDoc.deliveryFee != null ? Number(platformDoc.deliveryFee) : 0;
-    } catch (e) {
-      deliveryFee = 0;
-    }
-  }
-
-  // Tax (GST): use order.gstAmount or calculate from food CGST/SGST/IGST
-  let taxAmount = Number(order.gstAmount) || 
-    ((Number(order.foodCgst) || 0) + (Number(order.foodSgst) || 0) + (Number(order.foodIgst) || 0) + (Number(order.deliveryCgst) || 0) + (Number(order.deliverySgst) || 0) + (Number(order.deliveryIgst) || 0));
-
-  if (!Number.isFinite(taxAmount)) taxAmount = 0;
-
-  const platformFee = Number(order.platformFee) || 0;
-  const total = subtotal + deliveryFee + taxAmount + platformFee - discount;
+  // Figures come from the shared receipt so the PDF can never disagree with the website/app
+  const receipt = buildOrderReceipt(order);
+  const { itemTotal: subtotal, discount, deliveryFee, taxTotal: taxAmount, grandTotal: total } = receipt.summary;
 
   return {
     invoiceNumber,
@@ -121,18 +103,17 @@ const prepareOrderData = async (order, invoiceNumber) => {
       address: order.sellerId?.address?.fullAddress || `${order.sellerId?.address?.street || ''}, ${order.sellerId?.address?.city || ''}`.trim() || 'N/A',
       logo: order.sellerId?.logo ? (order.sellerId.logo.startsWith('http') ? order.sellerId.logo : `${backendUrl}${order.sellerId.logo.startsWith('/') ? '' : '/'}${order.sellerId.logo}`) : 'https://cdn-icons-png.flaticon.com/512/1046/1046771.png'
     },
-    items: (order.items || []).map(item => ({
-      name: item.name || 'Item',
-      quantity: Number(item.quantity) || 0,
-      price: Number(item.sellingPrice || item.price) || 0,
-      total: (Number(item.sellingPrice || item.price) || 0) * (Number(item.quantity) || 0)
-    })).filter(i => i.quantity > 0),
+    items: receipt.items.map(item => ({
+      name: item.name,
+      quantity: item.quantity,
+      price: item.unitPrice,
+      total: item.lineTotal,
+    })),
     summary: {
       subtotal,
       discount,
       delivery: deliveryFee,
       tax: taxAmount,
-      platform: platformFee,
       total,
       status: (order.paymentStatus || 'pending').toUpperCase()
     }
@@ -239,7 +220,6 @@ const getInvoiceHTML = (data) => {
                     <div class="summary-item"><span>Discount</span><span>-₹${data.summary.discount.toFixed(2)}</span></div>
                     <div class="summary-item"><span>Delivery</span><span>₹${data.summary.delivery.toFixed(2)}</span></div>
                     <div class="summary-item"><span>Tax (GST)</span><span>₹${data.summary.tax.toFixed(2)}</span></div>
-                    <div class="summary-item"><span>Platform Fee</span><span>₹${data.summary.platform.toFixed(2)}</span></div>
                     <div class="summary-total">
                         <span>Total</span>
                         <span>₹${data.summary.total.toFixed(2)}</span>
@@ -276,7 +256,7 @@ exports.generateInvoice = async (order) => {
     subtotal: data.summary.subtotal,
     tax: data.summary.tax,
     deliveryFee: data.summary.delivery,
-    platformFee: data.summary.platform,
+    platformFee: 0, // recorded on the order for settlement, not charged to the customer
     discount: data.summary.discount,
     totalAmount: data.summary.total,
     paymentMethod: order.paymentMethod,
@@ -395,7 +375,6 @@ exports.generateInvoice = async (order) => {
     drawRow('Discount:', -data.summary.discount);
     drawRow('Delivery:', data.summary.delivery);
     drawRow('Tax (GST):', data.summary.tax);
-    drawRow('Platform Fee:', data.summary.platform);
     doc.moveTo(350, y).lineTo(560, y).stroke(COLORS.secondary);
     y += 10;
     drawRow('TOTAL:', data.summary.total, true);

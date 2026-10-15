@@ -56,6 +56,22 @@ const { computeOrderGSTAndCommission, getGSTSettingsDoc } = require('../services
 const subscriptionService = require('../services/subscription.service');
 const walletController = require('../controllers/wallet.controller');
 const { computeDeliveryPricing, getDeliverySlabsFromDB } = require('../utils/deliveryPricing');
+const { priceOrder, toQuoteResponse, normalizePaymentMethod, initialPaymentStatus } = require('../services/order-pricing.service');
+
+// POST /api/user/orders/quote — authoritative checkout totals (same pricing as /place)
+exports.quoteOrder = async (req, res) => {
+  try {
+    const { sellerId, items, deliveryAddress } = req.body;
+    const priced = await priceOrder({ sellerId, items, deliveryAddress, requireStreet: false });
+    if (!priced.ok) {
+      const { ok, status, ...body } = priced;
+      return res.status(status).json({ success: false, ...body });
+    }
+    res.json({ success: true, quote: toQuoteResponse(priced) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
 
 // POST /api/user/orders/place
 exports.placeOrder = async (req, res) => {
@@ -80,103 +96,40 @@ exports.placeOrder = async (req, res) => {
         const firstItemId = items[0].menuItemId || items[0].id || items[0]._id;
         if (firstItemId && mongoose.Types.ObjectId.isValid(firstItemId)) {
           const product = await Product.findById(firstItemId);
-          if (product && product.sellerId) {
-            sellerId = product.sellerId.toString();
-            console.log(`[placeOrder] Auto-recovered sellerId: ${sellerId} from product ${firstItemId}`);
-          }
+          if (product && product.sellerId) sellerId = product.sellerId.toString();
         }
       }
     }
 
-    if (!sellerId || !mongoose.Types.ObjectId.isValid(sellerId)) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Invalid or missing restaurant/seller ID. Please re-add items to your cart and try again.' 
-      });
-    }
-
-    const seller = await Seller.findById(sellerId);
-    if (!seller) {
-      return res.status(404).json({ success: false, message: 'Seller not found' });
-    }
-
-    // ── Hard service-radius rule (12 km) ──────────────────────────────────────────────
-    {
-      const rawCust = deliveryAddress?.location?.coordinates;
-      const custPoint = Array.isArray(rawCust) ? [Number(rawCust[0]), Number(rawCust[1])] : null;
-      const { coords: sellerPoint } = getEffectiveSellerCoords(seller.toObject ? seller.toObject() : seller);
-      if (custPoint && isValidCoords(custPoint) && sellerPoint) {
-        const km = haversineKm(sellerPoint, custPoint);
-        if (km > SERVICE_RADIUS_KM) {
-          return res.status(400).json({
-            success: false,
-            message: `🚫 ${seller.businessName} is ${km.toFixed(1)} km away. We deliver only within ${SERVICE_RADIUS_KM} km of your location.`,
-            distanceKm: Number(km.toFixed(1)),
-            maxKm: SERVICE_RADIUS_KM,
-          });
-        }
+    // ── Idempotent retries: same key -> same order ───────────────────────────
+    const rawKey = req.get?.('Idempotency-Key') || req.body.idempotencyKey;
+    const idempotencyKey = typeof rawKey === 'string' && rawKey.trim() ? rawKey.trim().slice(0, 100) : undefined;
+    if (idempotencyKey) {
+      const existingOrder = await Order.findOne({ userId: req.user._id, idempotencyKey })
+        .populate('userId', 'name phone email')
+        .populate('sellerId', 'businessName type logo phone email');
+      if (existingOrder) {
+        return res.status(200).json({ success: true, duplicatePrevented: true, order: existingOrder, billing: { grandTotal: existingOrder.total } });
       }
     }
 
-    const settings = await getGSTSettingsDoc();
-    const platformDoc = await PlatformConfig.findOne();
-    const numSubtotal = Number(subtotal) || 0;
-
-    // ── Distance-Based Delivery Pricing (DB-driven slabs from Admin Panel) ────────
-    const sellerCoords = seller.address?.location?.coordinates; // [lng, lat]
-    const customerCoords = deliveryAddress?.location?.coordinates; // [lng, lat]
-
-    let numDel = 30; // Default to ₹30 (0-4 km slab) when coordinates unavailable
-    let riderPayoutAmount = 30;
-    let deliveryDistanceKm = 0;
-
-    if (sellerCoords && customerCoords &&
-        Array.isArray(sellerCoords) && sellerCoords.length === 2 &&
-        Array.isArray(customerCoords) && customerCoords.length === 2) {
-
-      // Fetch dynamic slabs from Admin Panel config
-      const { slabs, maxKm, maxCap } = await getDeliverySlabsFromDB();
-      const pricing = computeDeliveryPricing(sellerCoords, customerCoords, slabs, maxKm, maxCap);
-      console.log(`📏 Delivery distance: ${pricing.distanceKm} km | CustomerFee: ₹${pricing.customerFee} | RiderPayout: ₹${pricing.riderPayout} | Serviceable: ${pricing.serviceable} | MaxKm: ${maxKm} | MaxCap: ₹${maxCap}`);
-
-      if (!pricing.serviceable) {
-        return res.status(400).json({
-          success: false,
-          message: `🚫 Order Not Serviceable — Your location is ${pricing.distanceKm} km away. We currently deliver only up to ${maxKm} km.`,
-          distanceKm: pricing.distanceKm,
-          maxKm,
-        });
-      }
-
-      numDel = pricing.customerFee;
-      riderPayoutAmount = pricing.riderPayout;
-      deliveryDistanceKm = pricing.distanceKm;
-    } else {
-      // Coordinates not available — fall back to client-sent value or platform config
-      let fallbackFee = Number(deliveryFee);
-      if (!Number.isFinite(fallbackFee) || fallbackFee < 0) fallbackFee = 30;
-      if (platformDoc && platformDoc.deliveryFee != null && Number(platformDoc.deliveryFee) >= 0) {
-        fallbackFee = Number(platformDoc.deliveryFee);
-      }
-      numDel = fallbackFee;
-      console.log(`⚠️ No coordinates available for delivery pricing — using fallback ₹${numDel}`);
+    paymentMethod = normalizePaymentMethod(paymentMethod);
+    if (!paymentMethod) {
+      return res.status(400).json({ success: false, code: 'INVALID_PAYMENT_METHOD', message: 'Choose a valid payment method' });
     }
-    // ────────────────────────────────────────────────────────────────────────
 
-    const numPlat =
-      platformDoc && platformDoc.platformFee != null
-        ? Number(platformDoc.platformFee)
-        : Number(platformFee) || 0;
-
-    const tax = computeOrderGSTAndCommission({
-      subtotal: numSubtotal,
-      deliveryFee: numDel,
-      platformFeeRupee: numPlat,
-      sellerState: seller.address?.state,
-      customerState: deliveryAddress?.state,
-      settings,
-    });
-
+    // ── Server-side validation + pricing (seller approval, 21 km radius, items, prices, fees, GST) ──
+    const priced = await priceOrder({ sellerId, items, deliveryAddress, clientSubtotal: subtotal });
+    if (!priced.ok) {
+      const { ok, status, ...body } = priced;
+      return res.status(status).json({ success: false, ...body });
+    }
+    const { seller, lineItems, subtotal: numSubtotal, customerPoint, sellerPoint, distanceKm, tax } = priced;
+    items = lineItems.map(({ lineTotal, ...line }) => line);
+    const numDel = priced.deliveryFee;
+    const riderPayoutAmount = priced.riderPayout;
+    const deliveryDistanceKm = distanceKm;
+    const numPlat = priced.platformFee;
     const grandTotal = tax.customerPayable;
 
     // ── Idempotency / Duplicate Order Guard (20 seconds window) ──────────────
@@ -233,6 +186,7 @@ exports.placeOrder = async (req, res) => {
         } else {
           // No remaining amount in subscription
           console.log('❌ No remaining balance in subscription');
+          await session.abortTransaction();
           return res.status(400).json({
             success: false,
             message: `Your subscription for ${seller.businessName} has no remaining balance. Please renew your subscription.`,
@@ -272,8 +226,8 @@ exports.placeOrder = async (req, res) => {
 
       let sanitizedAddress = deliveryAddress ? { ...deliveryAddress } : {};
       const streetStr = (sanitizedAddress.street || sanitizedAddress.address || '').trim();
-      const cityStr = (sanitizedAddress.city || 'Chandigarh').trim();
-      const stateStr = (sanitizedAddress.state || 'Chandigarh').trim();
+      const cityStr = String(sanitizedAddress.city || '').trim();
+      const stateStr = String(sanitizedAddress.state || '').trim();
       const pinStr = (sanitizedAddress.pincode || '').trim();
       const fullAddr = (sanitizedAddress.fullAddress || [streetStr, cityStr, stateStr, pinStr].filter(Boolean).join(', ')).trim();
 
@@ -284,54 +238,19 @@ exports.placeOrder = async (req, res) => {
       sanitizedAddress.pincode = pinStr;
       sanitizedAddress.fullAddress = fullAddr;
 
-      // Coordinate resolution
-      let resolvedCoords = null;
-      if (sanitizedAddress.location?.coordinates && Array.isArray(sanitizedAddress.location.coordinates) && sanitizedAddress.location.coordinates.length === 2) {
-        const c0 = Number(sanitizedAddress.location.coordinates[0]);
-        const c1 = Number(sanitizedAddress.location.coordinates[1]);
-        if (!isNaN(c0) && !isNaN(c1) && !(c0 === 0 && c1 === 0)) {
-          resolvedCoords = [c0, c1];
-        }
-      }
-
-      // Check text for Chandigarh sector matching to ensure pinpoint accuracy
-      const combinedAddrText = `${streetStr} ${fullAddr} ${cityStr}`.toLowerCase();
-      if (combinedAddrText.includes('sector 40') || combinedAddrText.includes('sec 40') || combinedAddrText.includes('40-d') || combinedAddrText.includes('40d')) {
-        resolvedCoords = [76.7375, 30.7385];
-      } else if (combinedAddrText.includes('sector 41') || combinedAddrText.includes('sec 41') || combinedAddrText.includes('buterla')) {
-        resolvedCoords = [76.7410, 30.7325];
-      } else if (combinedAddrText.includes('sector 37') || combinedAddrText.includes('sec 37')) {
-        resolvedCoords = [76.7550, 30.7420];
-      } else if (combinedAddrText.includes('sector 35') || combinedAddrText.includes('sec 35')) {
-        resolvedCoords = [76.7640, 30.7240];
-      } else if (combinedAddrText.includes('sector 22') || combinedAddrText.includes('sec 22')) {
-        resolvedCoords = [76.7720, 30.7320];
-      } else if (combinedAddrText.includes('sector 17') || combinedAddrText.includes('sec 17')) {
-        resolvedCoords = [76.7794, 30.7333];
-      }
-
-      if (resolvedCoords) {
-        sanitizedAddress.location = {
-          type: 'Point',
-          coordinates: resolvedCoords,
-        };
-      }
+      // The delivery point is the validated customer location (never guessed from address text)
+      sanitizedAddress.location = { type: 'Point', coordinates: customerPoint };
 
       order = new Order({
         userId: req.user._id,
         sellerId,
         items,
         deliveryAddress: sanitizedAddress,
-        pickupLocation: (seller.address?.location?.coordinates && seller.address.location.coordinates.length === 2)
-          ? { type: 'Point', coordinates: [Number(seller.address.location.coordinates[0]), Number(seller.address.location.coordinates[1])] }
-          : { type: 'Point', coordinates: [76.7410, 30.7325] },
-        dropLocation: sanitizedAddress.location || (
-          (seller.address?.location?.coordinates && seller.address.location.coordinates.length === 2)
-            ? { type: 'Point', coordinates: [Number(seller.address.location.coordinates[0]) - 0.0035, Number(seller.address.location.coordinates[1]) + 0.006] }
-            : { type: 'Point', coordinates: [76.7375, 30.7385] }
-        ),
+        pickupLocation: { type: 'Point', coordinates: sellerPoint },
+        dropLocation: { type: 'Point', coordinates: customerPoint },
         paymentMethod,
-        paymentStatus: paymentMethod === 'cod' ? 'pending' : 'paid',
+        paymentStatus: initialPaymentStatus({ paymentMethod, payableAfterSubscription: payableAfterSub }),
+        paymentReference: req.body.transactionId ? String(req.body.transactionId).slice(0, 64) : undefined,
         subtotal: numSubtotal,
         deliveryFee: numDel,
         riderPayout: riderPayoutAmount,
@@ -353,9 +272,10 @@ exports.placeOrder = async (req, res) => {
         subscriptionAmountUsed: subCredit.amountUsed,
         subscriptionDaysDeducted: subCredit.daysUsed,
         payableAfterSubscription: payableAfterSub,
-        discount: discount || 0,
+        discount: 0, // no server-side order discounts exist; client values are ignored
         total: grandTotal,
         specialInstructions,
+        idempotencyKey,
         status: 'pending',
         statusHistory: [{ status: 'pending', timestamp: new Date() }],
       });
@@ -398,6 +318,11 @@ exports.placeOrder = async (req, res) => {
       await session.commitTransaction();
     } catch (innerErr) {
       await session.abortTransaction();
+      if (innerErr?.code === 11000 && idempotencyKey) {
+        // A concurrent retry with the same key won the race — return that order
+        const winner = await Order.findOne({ userId: req.user._id, idempotencyKey });
+        if (winner) return res.status(200).json({ success: true, duplicatePrevented: true, order: winner, billing: { grandTotal: winner.total } });
+      }
       throw innerErr;
     } finally {
       session.endSession();

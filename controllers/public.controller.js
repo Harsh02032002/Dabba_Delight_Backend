@@ -1,5 +1,6 @@
 const GSTSettings = require("../models/GSTSettings");
 const { PlatformConfig } = require("../models/Others");
+const { SERVICE_RADIUS_KM } = require("../utils/sellerGeo");
 
 /** Anonymous clients (checkout) need tax rates without admin auth */
 exports.getPublicGSTSettings = async (req, res) => {
@@ -49,7 +50,8 @@ exports.getPublicPlatformConfig = async (req, res) => {
         { upToKm: 6,  customerFee: 45, riderPayout: 40 },
         { upToKm: 12, customerFee: 60, riderPayout: 50 },
       ],
-      maxServiceableKm: o.maxServiceableKm || 12,
+      // Platform service radius (fixed rule, see utils/sellerGeo.js) — same value checkout enforces
+      maxServiceableKm: SERVICE_RADIUS_KM,
       maxDeliveryCap: o.maxDeliveryCap || 90,
 
       // General

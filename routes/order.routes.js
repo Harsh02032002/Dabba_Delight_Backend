@@ -3,6 +3,7 @@ const auth = require('../middleware/auth.middleware');
 const oc = require('../controllers/order.controller');
 const uc = require('../controllers/user.controller');
 
+router.post('/quote', auth, oc.quoteOrder);
 router.post('/place', auth, oc.placeOrder);
 router.get('/', auth, oc.getUserOrders);
 router.get('/:orderId/track', auth, uc.getOrderTracking);

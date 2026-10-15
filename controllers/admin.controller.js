@@ -174,7 +174,7 @@ exports.getSellers = async (req, res) => {
       if (req.query.status === 'verified') filter.kycStatus = 'verified';
       else if (req.query.status === 'active') filter.isActive = true;
       else if (req.query.status === 'inactive') filter.isActive = false;
-      else if (req.query.status === 'pending') filter.kycStatus = 'submitted';
+      else if (req.query.status === 'pending') filter.kycStatus = { $in: ['pending', 'submitted'] }; // awaiting approval (with or without documents)
       else if (req.query.status === 'home_chef') filter.type = { $in: ['home_chef', 'home-chef'] };
       else if (req.query.status === 'restaurant') filter.type = 'restaurant';
     }
@@ -264,6 +264,7 @@ exports.createSeller = async (req, res) => {
 
 exports.approveSeller = async (req, res) => {
   try {
+    if (!require('mongoose').Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ success: false, message: 'Seller not found' });
     const seller = await Seller.findByIdAndUpdate(req.params.id, { isActive: true, isVerified: true, kycStatus: 'verified' }, { new: true });
     if (!seller) return res.status(404).json({ message: 'Seller not found' });
     await logAction(req, 'seller_approved', 'Seller', seller._id, { businessName: seller.businessName });
@@ -274,6 +275,7 @@ exports.approveSeller = async (req, res) => {
 
 exports.rejectSeller = async (req, res) => {
   try {
+    if (!require('mongoose').Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ success: false, message: 'Seller not found' });
     const seller = await Seller.findByIdAndUpdate(req.params.id, { isActive: false, kycStatus: 'rejected' }, { new: true });
     if (!seller) return res.status(404).json({ message: 'Seller not found' });
     await logAction(req, 'seller_rejected', 'Seller', seller._id);
@@ -736,3 +738,28 @@ exports.getDeliveryDashboard = async (req, res) => {
 };
 
 
+
+// PATCH /api/admin/orders/:id/payment  { status: 'paid' | 'failed', reference? }
+// Manual confirmation of UPI / QR payments that the server could not verify itself.
+exports.setOrderPaymentStatus = async (req, res) => {
+  try {
+    const { status, reference } = req.body;
+    if (!['paid', 'failed'].includes(status)) {
+      return res.status(400).json({ success: false, message: "status must be 'paid' or 'failed'" });
+    }
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (order.paymentStatus === 'refunded') {
+      return res.status(409).json({ success: false, message: 'Refunded orders cannot change payment status' });
+    }
+    order.paymentStatus = status;
+    if (status === 'paid') {
+      order.paymentVerifiedAt = new Date();
+      order.paymentVerifiedBy = 'admin';
+    }
+    if (reference) order.paymentReference = String(reference).slice(0, 64);
+    await order.save();
+    await logAction(req, `order_payment_${status}`, 'Order', order._id, { orderNumber: order.orderNumber });
+    res.json({ success: true, order });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};

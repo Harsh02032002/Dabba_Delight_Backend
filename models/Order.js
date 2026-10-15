@@ -60,6 +60,13 @@ const orderSchema = new mongoose.Schema({
   paymentMethod: { type: String, enum: ['razorpay', 'cod', 'wallet', 'stripe', 'subscription', 'online', 'online_qr', 'upi'] },
   paymentStatus: { type: String, enum: ['pending', 'paid', 'failed', 'refunded'], default: 'pending' },
   paymentId: String,
+  /** Customer-entered UPI reference (UTR) for manual QR payments — not proof of payment */
+  paymentReference: String,
+  /** Set when a payment was verified (Razorpay signature + amount, or by an admin) */
+  paymentVerifiedAt: Date,
+  paymentVerifiedBy: { type: String, enum: ['razorpay', 'admin', null], default: null },
+  /** Client-generated key for one checkout attempt; retries return the same order */
+  idempotencyKey: String,
   specialInstructions: String,
   rating: { type: Number, min: 1, max: 5 },
   review: String,
@@ -152,6 +159,10 @@ orderSchema.pre('save', async function () {
 
 // Indexes for faster queries
 orderSchema.index({ userId: 1, createdAt: -1 });
+orderSchema.index(
+  { userId: 1, idempotencyKey: 1 },
+  { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } },
+);
 orderSchema.index({ sellerId: 1, createdAt: -1 });
 orderSchema.index({ status: 1 });
 // Note: orderNumber already has unique:true (no need to re-declare)

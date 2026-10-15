@@ -57,6 +57,8 @@ const mkRider = async (point, name) => {
   const partner = await DeliveryPartner.create({
     userId: user._id, name, phone: `98${String(seq).padStart(8, '0')}`,
     isOnline: true, isAvailable: true,
+    // Riders must be KYC-verified and admin-approved to receive/accept orders
+    kycStatus: 'verified', isApproved: true,
     currentLocation: { type: 'Point', coordinates: point },
   });
   return { user, partner };
@@ -126,9 +128,9 @@ test('seller confirm offers the order to nearby riders only, without assigning i
   assert.equal(payload.customerPhone, undefined, 'no customer contact before acceptance');
   assert.ok(!String(payload.dropAddress).includes('House 12'), 'no street address before acceptance');
 
-  assert.equal((await notificationsFor(near.user._id, '🛵 New Delivery Request Nearby!')).length, 1);
+  assert.equal((await notificationsFor(near.user._id, 'New Delivery Request Nearby')).length, 1);
   assert.equal((await notificationsFor(far.user._id)).length, 0);
-  assert.equal((await notificationsFor(customer._id, '👨‍🍳 Order Confirmed & Cooking!')).length, 1);
+  assert.equal((await notificationsFor(customer._id, 'Order Confirmed & Cooking')).length, 1);
 });
 
 test('two riders accepting at the same time: exactly one wins', async () => {
@@ -155,8 +157,8 @@ test('two riders accepting at the same time: exactly one wins', async () => {
   assert.equal(loserDoc.activeOrderId, null);
   assert.equal(loserDoc.isAvailable, true);
 
-  assert.equal((await notificationsFor(customer._id, '🛵 Delivery Partner Assigned!')).length, 1);
-  assert.equal((await notificationsFor(winner.user._id, '🛵 Order Assigned to You!')).length, 1);
+  assert.equal((await notificationsFor(customer._id, 'Delivery Partner Assigned')).length, 1);
+  assert.equal((await notificationsFor(winner.user._id, 'Order Assigned to You')).length, 1);
   assert.ok(io.events.some((e) => e.room === 'delivery_partners' && e.event === 'delivery_request_taken'));
   assert.ok(io.events.some((e) => e.room === `user_${customer._id}` && e.event === 'order_status_update' && e.payload.deliveryStatus === 'assigned'));
 });
@@ -200,7 +202,7 @@ test('pickup → out for delivery → OTP delivery credits the rider exactly onc
   const picked = await call(deliveryController.updateDeliveryStatus, { body: { orderId, status: 'picked' }, user: a.user, io });
   assert.equal(picked.status, 200);
   assert.equal(picked.body.order.status, 'out_for_delivery');
-  assert.equal((await notificationsFor(customer._id, '🛵 Out for Delivery!')).length, 1);
+  assert.equal((await notificationsFor(customer._id, 'Out for Delivery')).length, 1);
 
   // Double tap / retry: both succeed, money moves once
   const [d1, d2] = await Promise.all([
@@ -223,8 +225,8 @@ test('pickup → out for delivery → OTP delivery credits the rider exactly onc
   const saved = await Order.findById(orderId);
   assert.equal(saved.status, 'delivered');
   assert.equal(saved.paymentStatus, 'paid');
-  assert.equal((await notificationsFor(customer._id, '✨ Order Delivered! Enjoy your meal 😋')).length, 1);
-  assert.equal((await notificationsFor(a.user._id, '💰 Delivery Completed!')).length, 1);
+  assert.equal((await notificationsFor(customer._id, 'Order Delivered! Enjoy your meal')).length, 1);
+  assert.equal((await notificationsFor(a.user._id, 'Delivery Completed')).length, 1);
 });
 
 test('customer cancellation releases the assigned rider and cannot be repeated', async () => {
@@ -242,8 +244,8 @@ test('customer cancellation releases the assigned rider and cannot be repeated',
   assert.equal(rider.activeOrderId, null);
   assert.equal(rider.isAvailable, true);
   assert.ok(io.events.some((e) => e.room === `delivery_partner_${a.partner._id}` && e.event === 'orderCancelled'));
-  assert.equal((await notificationsFor(customer._id, '❌ Order Cancelled')).length, 1);
-  assert.equal((await notificationsFor(a.user._id, '❌ Order Cancelled')).length, 1);
+  assert.equal((await notificationsFor(customer._id, 'Order Cancelled')).length, 1);
+  assert.equal((await notificationsFor(a.user._id, 'Order Cancelled')).length, 1);
 
   const again = await call(orderController.cancelOrder, { params: { id: orderId }, user: customer, io });
   assert.equal(again.status, 400);
@@ -278,8 +280,8 @@ test('seller ready notifies the customer and the assigned rider', async () => {
     user: { _id: sellerUser._id, role: 'seller', sellerId: seller._id }, io,
   });
   assert.equal(res.status, 200);
-  assert.equal((await notificationsFor(customer._id, '✅ Food is Ready!')).length, 1);
-  assert.equal((await notificationsFor(a.user._id, '📦 Order Ready for Pickup!')).length, 1);
+  assert.equal((await notificationsFor(customer._id, 'Food is Ready')).length, 1);
+  assert.equal((await notificationsFor(a.user._id, 'Order Ready for Pickup')).length, 1);
   assert.ok(io.events.some((e) => e.room === `delivery_partner_${a.partner._id}` && e.event === 'order_ready'));
 
   // Seller can no longer hand it out themselves

@@ -30,6 +30,7 @@ const tokenAuth = async (req, res, next) => {
   }
 };
 
+router.get('/receipt/:orderId', auth, ic.getOrderReceipt);
 router.post('/generate/:orderId', auth, ic.generateInvoiceForOrder);
 router.get('/:invoiceId', auth, ic.getInvoice);
 router.get('/download/:orderId', tokenAuth, ic.downloadInvoice); // Use tokenAuth instead of auth

@@ -10,7 +10,8 @@
  *    0  – 4  km  →  ₹30
  *    4.1 – 6  km  →  ₹45
  *    6.1 – 12 km  →  ₹60
- *    > 12 km      →  NOT SERVICEABLE  (returns null)
+ *    12 – service radius (21 km) → last slab fee (₹60)
+ *    > service radius            →  NOT SERVICEABLE  (returns null)
  *
  *  RIDER PAYOUT (what rider earns per delivery):
  *    0  – 4  km  →  ₹30
@@ -26,7 +27,11 @@ const DEFAULT_SLABS = [
   { upToKm: 12, customerFee: 60, riderPayout: 50 },
 ];
 
-const DEFAULT_MAX_KM = 12;
+// The serviceable distance is the platform service radius (utils/sellerGeo.js), so discovery,
+// checkout and delivery pricing can never disagree. Slabs only decide the fee inside it;
+// beyond the last slab (and up to the radius) the last slab's fee applies.
+const { SERVICE_RADIUS_KM } = require('./sellerGeo');
+const DEFAULT_MAX_KM = SERVICE_RADIUS_KM;
 const DEFAULT_MAX_CAP = 90;
 
 /**
@@ -158,10 +163,8 @@ async function getDeliverySlabsFromDB() {
     if (!config) config = {};
     return {
       slabs: normaliseSlabs(config.deliverySlabs),
-      maxKm:
-        typeof config.maxServiceableKm === 'number' && config.maxServiceableKm > 0
-          ? config.maxServiceableKm
-          : DEFAULT_MAX_KM,
+      // PlatformConfig.maxServiceableKm is intentionally not used as a second, conflicting limit
+      maxKm: SERVICE_RADIUS_KM,
       maxCap:
         typeof config.maxDeliveryCap === 'number' && config.maxDeliveryCap > 0
           ? config.maxDeliveryCap

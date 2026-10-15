@@ -57,10 +57,24 @@ const KNOWN_CITY_COORDS = {
 const PIN_MISMATCH_KM = 80;
 
 // ─── SERVICE RADIUS (single source of truth) ───────────────────────────
-// Customers only see sellers/menus within this distance of their location, and riders
-// only receive orders whose customer is within this distance of them.
+// Straight-line (Haversine) distance between the customer's delivery point and the seller.
+// Customers only see sellers/menus within this distance, checkout rejects orders beyond it,
+// and riders only receive orders whose customer is within this distance of them.
+// The boundary is INCLUSIVE: a seller exactly SERVICE_RADIUS_KM away is eligible.
 // Override with SERVICE_RADIUS_KM in .env if ever needed.
-const SERVICE_RADIUS_KM = Number(process.env.SERVICE_RADIUS_KM) > 0 ? Number(process.env.SERVICE_RADIUS_KM) : 12;
+const DEFAULT_SERVICE_RADIUS_KM = 21;
+const SERVICE_RADIUS_KM = Number(process.env.SERVICE_RADIUS_KM) > 0 ? Number(process.env.SERVICE_RADIUS_KM) : DEFAULT_SERVICE_RADIUS_KM;
+
+// ─── SELLER ELIGIBILITY (single source of truth) ───────────────────────
+// A seller is visible to customers and can receive orders only after an admin approved it
+// (POST /api/admin/sellers/:id/approve sets kycStatus 'verified' + isActive true).
+// Rejecting or deactivating a seller removes it from discovery and checkout.
+const ELIGIBLE_SELLER_FILTER = Object.freeze({ isActive: true, kycStatus: 'verified' });
+const isSellerEligible = (seller) => !!seller && seller.isActive === true && seller.kycStatus === 'verified';
+
+/** Inclusive boundary rule: exactly SERVICE_RADIUS_KM away is still served */
+const isWithinServiceRadius = (distanceKm, radiusKm = SERVICE_RADIUS_KM) =>
+  Number.isFinite(distanceKm) && distanceKm >= 0 && distanceKm <= radiusKm;
 
 /** Requested radius (metres, from client) -> km, never more than SERVICE_RADIUS_KM */
 const clampRadiusKm = (radiusMeters) => {
@@ -148,7 +162,7 @@ const buildTypeQuery = (type) => {
  */
 const findNearbySellers = async ({ lat, lng, radiusMeters, type, areaName, limit = 50 } = {}) => {
   const Seller = require('../models/Seller');
-  const filter = { isActive: true };
+  const filter = { ...ELIGIBLE_SELLER_FILTER };
   const typeQuery = buildTypeQuery(type);
   if (typeQuery) filter.type = typeQuery;
 
@@ -160,7 +174,7 @@ const findNearbySellers = async ({ lat, lng, radiusMeters, type, areaName, limit
   if (!hasUserCoords && !nameParts.length) return [];
 
   const candidates = await Seller.find(filter)
-    .select('-bankDetails -kycDocuments')
+    .select('-bankDetails -kycDocuments -totalRevenue -commissionRate -referralCode -referredBy')
     .limit(2000)
     .lean();
 
@@ -176,7 +190,7 @@ const findNearbySellers = async ({ lat, lng, radiusMeters, type, areaName, limit
       const { coords } = getEffectiveSellerCoords(s);
       if (coords) {
         const d = haversineKm(userPoint, coords);
-        if (d <= radiusKm) sellers.push({ ...s, distanceKm: Math.round(d * 10) / 10 });
+        if (isWithinServiceRadius(d, radiusKm)) sellers.push({ ...s, distanceKm: Math.round(d * 10) / 10 });
       }
       // Seller with no usable location can't be proven to be within the service
       // radius -> not shown (strict location-wise rule).
@@ -192,7 +206,11 @@ const findNearbySellers = async ({ lat, lng, radiusMeters, type, areaName, limit
 module.exports = {
   KNOWN_CITY_COORDS,
   PIN_MISMATCH_KM,
+  DEFAULT_SERVICE_RADIUS_KM,
   SERVICE_RADIUS_KM,
+  ELIGIBLE_SELLER_FILTER,
+  isSellerEligible,
+  isWithinServiceRadius,
   clampRadiusKm,
   haversineKm,
   isValidCoords,

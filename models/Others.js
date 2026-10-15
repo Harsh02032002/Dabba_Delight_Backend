@@ -713,7 +713,8 @@ const platformConfigSchema = new mongoose.Schema(
         { upToKm: 12, customerFee: 60, riderPayout: 50 },
       ],
     },
-    maxServiceableKm: { type: Number, default: 12 }, // Orders beyond this are rejected
+    // Legacy field: the serviceable distance is now the platform service radius (utils/sellerGeo.js, 21 km)
+    maxServiceableKm: { type: Number, default: 21 },
     maxDeliveryCap:   { type: Number, default: 90 }, // Max customer delivery fee cap (₹)
 
     // ── Footer Social Links ──────────────────────────

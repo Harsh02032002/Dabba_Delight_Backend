@@ -1,10 +1,11 @@
+const mongoose = require('mongoose');
 const { Notification, WalletTransaction, Banner, DeliveryPartner } = require('../models/Others');
 const User = require('../models/User');
 const Seller = require('../models/Seller');
 const Product = require('../models/Product');
 const Order = require('../models/Order');
 const RatingService = require('../services/rating.service');
-const { findNearbySellers, SERVICE_RADIUS_KM, haversineKm, isValidCoords, getEffectiveSellerCoords } = require('../utils/sellerGeo');
+const { findNearbySellers, SERVICE_RADIUS_KM, haversineKm, isValidCoords, getEffectiveSellerCoords, ELIGIBLE_SELLER_FILTER, isSellerEligible } = require('../utils/sellerGeo');
 
 // ─── Notifications ──────────────────────────────
 exports.getNotifications = async (req, res) => {
@@ -118,7 +119,7 @@ exports.getSellers = async (req, res) => {
       return res.json({ success: true, sellers: sellersWithImages, total: sellersWithImages.length });
     }
 
-    const filter = { isActive: true };
+    const filter = { ...ELIGIBLE_SELLER_FILTER };
     if (type && type !== 'all') {
       const typeVal = type;
       filter.type = (typeVal === 'home_chef' || typeVal === 'home-chef')
@@ -146,7 +147,8 @@ exports.getSellers = async (req, res) => {
 exports.getMenuItems = async (req, res) => {
   try {
     // Only fetch products that have an active seller and are available
-    const filter = { isAvailable: true, isDeleted: { $ne: true }, sellerId: { $ne: null, $exists: true } };
+    // Only available, published items of approved sellers (see ELIGIBLE_SELLER_FILTER)
+    const filter = { isAvailable: true, status: { $nin: ['draft', 'archived'] }, stock: { $ne: 0 }, isDeleted: { $ne: true }, sellerId: { $ne: null, $exists: true } };
 
     const { lat, lng, radius, city, locationName, sellerId, sellerIds, type, category, isVeg, search, page = 1, limit = 50 } = req.query;
 
@@ -154,6 +156,12 @@ exports.getMenuItems = async (req, res) => {
     const hasArea = !!(city || locationName);
 
     // If client requested a specific sellerId AND passed coordinates:
+    if (sellerId) {
+      const targetSeller = mongoose.Types.ObjectId.isValid(String(sellerId)) ? await Seller.findById(sellerId).lean() : null;
+      if (!isSellerEligible(targetSeller)) {
+        return res.json({ success: true, products: [], total: 0, notAvailable: true, message: 'This kitchen is not accepting orders right now.' });
+      }
+    }
     if (sellerId && hasUserCoords) {
       const targetSeller = await Seller.findById(sellerId);
       if (targetSeller) {
@@ -182,7 +190,7 @@ exports.getMenuItems = async (req, res) => {
       const typeQuery = (typeVal === 'home_chef' || typeVal === 'home-chef') 
         ? { $in: ['home_chef', 'home-chef'] } 
         : typeVal;
-      const matchingSellers = await Seller.find({ isActive: true, type: typeQuery }).select('_id').lean();
+      const matchingSellers = await Seller.find({ ...ELIGIBLE_SELLER_FILTER, type: typeQuery }).select('_id').lean();
       targetSellerIds = matchingSellers.map(s => s._id.toString());
     }
 
@@ -235,14 +243,14 @@ exports.getMenuItems = async (req, res) => {
 
     let products = await Product.find(filter)
       .select('_id sellerId name description sellingPrice discountPrice category image isVeg preparationTime rating totalOrders stock')
-      .populate('sellerId', '_id businessName type logo rating address')
+      .populate('sellerId', '_id businessName type logo rating address isActive kycStatus')
       .sort({ rating: -1 })
       .limit(Number(limit) || 50)
       .skip(((Number(page) || 1) - 1) * (Number(limit) || 50))
       .lean();
 
-    // Ensure sellerId populated exists and is active
-    products = products.filter(p => p.sellerId != null);
+    // Ensure the populated seller exists and is approved (never leak menus of pending/rejected sellers)
+    products = products.filter(p => p.sellerId != null && isSellerEligible(p.sellerId));
 
     // Strict type check
     if (type && type !== 'all') {
@@ -268,7 +276,7 @@ exports.getSellerById = async (req, res) => {
       .select('-bankDetails -kycDocuments.aadhaar -kycDocuments.pan -kycDocuments.fssai -kycDocuments.bankProof')
       .lean();
 
-    if (!seller) {
+    if (!seller || !isSellerEligible(seller)) {
       return res.status(404).json({ success: false, message: 'Seller not found' });
     }
 
@@ -285,7 +293,8 @@ exports.getSellerById = async (req, res) => {
 
 exports.getRecommendations = async (req, res) => {
   try {
-    const products = await Product.find({ isAvailable: true, status: 'published', isAdminApproved: true })
+    const eligibleSellerIds = await Seller.find(ELIGIBLE_SELLER_FILTER).distinct('_id');
+    const products = await Product.find({ isAvailable: true, status: 'published', isAdminApproved: true, sellerId: { $in: eligibleSellerIds } })
       .select('_id sellerId name description sellingPrice discountPrice category image isVeg preparationTime rating totalOrders')
       .populate('sellerId', '_id businessName type logo rating')
       .sort({ totalOrders: -1, rating: -1 })

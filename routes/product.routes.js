@@ -8,6 +8,36 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Seller = require('../models/Seller');
 
+// Sellers may read their own menu while pending, but may only create or change items once
+// an admin has approved them (same rule as sellerAuth's KYC gate)
+const requireApprovedForWrites = (req, res, next) => {
+  if (req.method !== 'GET' && req.seller && req.seller.kycStatus !== 'verified') {
+    return res.status(403).json({
+      success: false,
+      message: 'Your seller account is pending approval. You can add menu items once an admin approves it.',
+      kycStatus: req.seller.kycStatus,
+      requiresKYC: true,
+    });
+  }
+  next();
+};
+
+// GET /api/products: anonymous allowed; a valid seller/admin token scopes the result
+const optionalSellerOrAdminAuth = async (req, res, next) => {
+  const token = req.header('Authorization')?.replace('Bearer ', '');
+  if (!token) return next();
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id);
+    if (user?.role === 'admin') { req.user = user; req.admin = user; }
+    else if (user?.role === 'seller') {
+      req.user = user;
+      req.seller = await Seller.findOne({ userId: user._id });
+    }
+  } catch (_) { /* invalid token -> treat as anonymous */ }
+  next();
+};
+
 // Helper middleware to allow both seller and admin seamlessly
 const sellerOrAdminAuth = async (req, res, next) => {
   try {
@@ -38,7 +68,7 @@ const sellerOrAdminAuth = async (req, res, next) => {
         });
       }
       req.seller = seller;
-      return next();
+      return requireApprovedForWrites(req, res, next);
     }
 
     // ── Fallback: check if user has a Seller profile (role may not be updated) ──
@@ -49,7 +79,7 @@ const sellerOrAdminAuth = async (req, res, next) => {
       user.role = 'seller';
       await user.save().catch(() => {}); // non-blocking
       req.seller = sellerByProfile;
-      return next();
+      return requireApprovedForWrites(req, res, next);
     }
 
     return res.status(403).json({ message: 'Access denied. Neither seller nor admin.' });
@@ -59,7 +89,7 @@ const sellerOrAdminAuth = async (req, res, next) => {
 };
 
 // CRUD
-router.get('/', pc.getProducts);
+router.get('/', optionalSellerOrAdminAuth, pc.getProducts);
 router.post('/', sellerOrAdminAuth, ...s3Upload('image', 'products'), pc.createProduct);
 router.put('/:id', sellerOrAdminAuth, ...s3Upload('image', 'products'), pc.updateProduct);
 

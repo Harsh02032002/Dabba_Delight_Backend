@@ -5,62 +5,60 @@ const { Referral, ReferralConfig } = require('../models/Others');
 const { sendEmail, generateCode } = require('../utils/email.service');
 const { buildIdentifierQuery, sendDualOTP } = require('../utils/sms.service');
 const { getJwtSecret } = require('../utils/jwt');
+const { validateRegistration } = require('../utils/registration');
 
 const generateToken = (id) => jwt.sign({ id }, getJwtSecret(), { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
 
 // POST /api/auth/register
 exports.register = async (req, res) => {
   try {
-    const { name, email, password, phone, role = 'user', businessName, address, referralCode, type } = req.body;
+    const checked = validateRegistration(req.body);
+    if (!checked.ok) {
+      return res.status(checked.status).json({ success: false, message: checked.message, field: checked.field });
+    }
+    const { name, email, password, phone, role, businessName, type } = checked.value;
+    const { address, referralCode } = req.body;
 
-    const existing = await User.findOne({ email });
+    const existing = await User.findOne({ email }).select('+password');
     if (existing) {
-      // If trying to register as seller with an existing account, upgrade/create seller profile
-      if (role === 'seller') {
-        // Ensure user has seller role
+      // An existing customer may add a seller profile to the same account, but only by proving
+      // they own it (correct password). The password is never overwritten here, and admin /
+      // rider accounts can never be converted.
+      if (role === 'seller' && (existing.role === 'user' || existing.role === 'seller')) {
+        const passwordOk = await existing.comparePassword(password).catch(() => false);
+        if (!passwordOk) {
+          return res.status(409).json({ success: false, message: 'Email already registered. Sign in with your existing password to add a seller profile.' });
+        }
+        const existingProfile = await Seller.findOne({ userId: existing._id });
+        if (existing.role === 'seller' && existingProfile) {
+          return res.status(409).json({ success: false, message: 'A seller account with this email already exists. Please sign in.' });
+        }
         if (existing.role !== 'seller') {
           existing.role = 'seller';
-          if (password) existing.password = password;
           await existing.save();
         }
-
-        // Ensure seller profile exists
-        let sellerProfile = await Seller.findOne({ userId: existing._id });
-        if (!sellerProfile) {
-          sellerProfile = await Seller.create({
-            userId: existing._id,
-            businessName: businessName || existing.businessName || name || existing.name,
-            phone: phone || existing.phone || '',
-            email: existing.email,
-            type: type || 'home_chef',
-            address: typeof address === 'string' ? { street: address } : address || {},
-          });
-        }
+        const sellerProfile = existingProfile || await Seller.create({
+          userId: existing._id,
+          businessName,
+          phone: phone || existing.phone || '',
+          email: existing.email,
+          type,
+          address: typeof address === 'string' ? { street: address } : address || {},
+        });
 
         const token = generateToken(existing._id);
         return res.status(200).json({
           success: true,
           token,
           user: { _id: existing._id, name: existing.name, email: existing.email, role: existing.role, phone: existing.phone },
+          seller: { _id: sellerProfile._id, kycStatus: sellerProfile.kycStatus, isActive: sellerProfile.isActive },
         });
       }
 
-      return res.status(400).json({ success: false, message: 'Email already registered' });
+      return res.status(409).json({ success: false, message: 'Email already registered' });
     }
 
     const user = new User({ name, email, password, phone, role, businessName });
-
-    // Handle user referral (user-to-user)
-    if (referralCode && role === 'user') {
-      const referrer = await User.findOne({ referralCode });
-      if (referrer) {
-        const refConfig = await ReferralConfig.findOne();
-        const userReward = refConfig?.userReward || 100;
-        user.referredBy = referralCode;
-        referrer.wallet += userReward;
-        await referrer.save();
-      }
-    }
 
     // Generate verification code (sent to BOTH Email and Phone SMS)
     const code = generateCode();
@@ -71,39 +69,58 @@ exports.register = async (req, res) => {
 
     await user.save();
 
-    // Send verification OTP to BOTH Email and Phone SMS
-    sendDualOTP({ user, otp: code, purpose: 'Account Verification' }).catch(() => {});
-
-    // If seller, create seller profile
+    // If seller, create the seller profile. New sellers start pending approval
+    // (kycStatus 'pending', isActive false) and stay hidden from customers until an admin approves.
+    let newSeller = null;
     if (role === 'seller') {
-      const newSeller = await Seller.create({
-        userId: user._id,
-        businessName: businessName || name,
-        phone: phone || '',
-        email,
-        type: type || 'home_chef',
-        address: typeof address === 'string' ? { street: address } : address || {},
-      });
-
-      // Handle seller referral code (seller-to-seller)
-      if (referralCode) {
-        const referrerSeller = await Seller.findOne({ referralCode });
-        if (referrerSeller) {
-          const refConfig = await ReferralConfig.findOne();
-          const sellerReward = refConfig?.sellerReward || 500;
-          newSeller.referredBy = referrerSeller._id;
-          await newSeller.save();
-
-          await Referral.create({
-            referrerId: referrerSeller._id,
-            referredId: newSeller._id,
-            referralCode,
-            status: 'pending',
-            reward: sellerReward,
-          });
-        }
+      try {
+        newSeller = await Seller.create({
+          userId: user._id,
+          businessName,
+          phone,
+          email,
+          type,
+          address: typeof address === 'string' ? { street: address } : address || {},
+        });
+      } catch (sellerErr) {
+        // Don't leave a seller login without a seller profile behind
+        await User.deleteOne({ _id: user._id }).catch(() => {});
+        throw sellerErr;
       }
     }
+
+    // Referral rewards only after the new account definitely exists
+    if (referralCode && role === 'user') {
+      const referrer = await User.findOne({ referralCode });
+      if (referrer) {
+        const refConfig = await ReferralConfig.findOne();
+        const userReward = refConfig?.userReward || 100;
+        user.referredBy = referralCode;
+        await user.save();
+        referrer.wallet += userReward;
+        await referrer.save();
+      }
+    }
+    if (referralCode && newSeller) {
+      const referrerSeller = await Seller.findOne({ referralCode });
+      if (referrerSeller) {
+        const refConfig = await ReferralConfig.findOne();
+        const sellerReward = refConfig?.sellerReward || 500;
+        newSeller.referredBy = referrerSeller._id;
+        await newSeller.save();
+
+        await Referral.create({
+          referrerId: referrerSeller._id,
+          referredId: newSeller._id,
+          referralCode,
+          status: 'pending',
+          reward: sellerReward,
+        });
+      }
+    }
+
+    // Send verification OTP to BOTH Email and Phone SMS
+    sendDualOTP({ user, otp: code, purpose: 'Account Verification' }).catch(() => {});
 
     const token = generateToken(user._id);
     res.status(201).json({
@@ -111,8 +128,12 @@ exports.register = async (req, res) => {
       requiresVerification: true,
       token,
       user: { _id: user._id, name: user.name, email: user.email, role: user.role, phone: user.phone, isVerified: user.isVerified },
+      ...(newSeller ? { seller: { _id: newSeller._id, kycStatus: newSeller.kycStatus, isActive: newSeller.isActive } } : {}),
     });
   } catch (err) {
+    if (err && err.code === 11000) {
+      return res.status(409).json({ success: false, message: 'Email already registered' });
+    }
     res.status(500).json({ success: false, message: err.message });
   }
 };

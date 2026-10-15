@@ -35,6 +35,7 @@ router.post('/users/:id/unblock', adminAuth, ac.unblockUser);
 
 // Orders
 router.get('/orders', adminAuth, oc.getAdminOrders);
+router.patch('/orders/:id/payment', adminAuth, ac.setOrderPaymentStatus);
 // router.post('/orders/:id/refund', adminAuth, oc.refundOrder); // Function not implemented yet
 
 // Disputes
