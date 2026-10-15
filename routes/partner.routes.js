@@ -1,5 +1,6 @@
 const router = require('express').Router();
 const auth = require('../middleware/auth.middleware');
+const { s3Upload } = require('../middleware/s3-upload.middleware');
 const dc = require('../controllers/delivery.controller');
 
 // Partner registration (no auth required)
@@ -12,6 +13,11 @@ router.post('/verify-login-otp', dc.verifyPartnerLoginOtp);
 
 // Authenticated partner routes
 router.use(auth);
+
+// KYC Verification
+router.get('/kyc', dc.getKycStatus);
+router.post('/kyc/document', ...s3Upload('document', 'rider-kyc'), dc.uploadKycDocument);
+router.post('/kyc/submit', dc.submitKycDocuments);
 
 router.put('/toggle-online', dc.goOnline);
 router.put('/location-update', dc.updateDeliveryLocation);

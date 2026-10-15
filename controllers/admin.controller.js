@@ -5,7 +5,7 @@ const Product = require('../models/Product');
 const {
   Settlement, Referral, Dispute, AuditLog, Category, Campaign,
   CommissionConfig, GSTConfig, ReferralConfig, PlatformConfig, Notification,
-  WalletTransaction,
+  WalletTransaction, DeliveryPartner,
 } = require('../models/Others');
 
 // ─── Audit Log Helper ───────────────────────────
@@ -610,4 +610,129 @@ exports.updatePlatformConfig = async (req, res) => {
     res.json({ success: true, ...config.toObject() });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
+
+// ─── Delivery Partner Fleet & KYC Approval ───────────────────────────
+exports.getDeliveryPartners = async (req, res) => {
+  try {
+    const { status, online, city } = req.query;
+    const filter = {};
+    if (status === 'pending') {
+      filter.$or = [{ kycStatus: 'submitted' }, { kycStatus: 'pending' }, { isApproved: false }];
+    } else if (status === 'active') {
+      filter.isApproved = true;
+      filter.kycStatus = 'verified';
+    }
+    if (online === 'true') {
+      filter.isOnline = true;
+    }
+    if (city) {
+      filter.city = { $regex: city, $options: 'i' };
+    }
+
+    const partners = await DeliveryPartner.find(filter)
+      .populate('userId', 'name phone email avatar')
+      .sort({ createdAt: -1 });
+
+    res.json({ success: true, partners });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.getDeliveryPartnerById = async (req, res) => {
+  try {
+    const partner = await DeliveryPartner.findById(req.params.id).populate('userId', 'name phone email avatar');
+    if (!partner) return res.status(404).json({ success: false, message: 'Partner not found' });
+    res.json({ success: true, partner });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.approveDeliveryPartner = async (req, res) => {
+  try {
+    const partner = await DeliveryPartner.findById(req.params.id);
+    if (!partner) return res.status(404).json({ success: false, message: 'Partner not found' });
+
+    partner.isApproved = true;
+    partner.kycStatus = 'verified';
+    partner.kycRejectReason = null;
+    if (partner.kycDocuments) {
+      if (partner.kycDocuments.aadhaar) partner.kycDocuments.aadhaar.status = 'verified';
+      if (partner.kycDocuments.pan) partner.kycDocuments.pan.status = 'verified';
+      if (partner.kycDocuments.drivingLicense && partner.kycDocuments.drivingLicense.url) {
+        partner.kycDocuments.drivingLicense.status = 'verified';
+      }
+      if (partner.kycDocuments.vehicleRC && partner.kycDocuments.vehicleRC.url) {
+        partner.kycDocuments.vehicleRC.status = 'verified';
+      }
+    }
+    await partner.save();
+
+    await logAction(req, 'delivery_partner_approved', 'DeliveryPartner', partner._id, { name: partner.name, phone: partner.phone });
+    await Notification.create({
+      userId: partner.userId,
+      type: 'kyc',
+      title: 'KYC Verified 🎉',
+      message: 'Aapka Rider account approve ho gaya hai! Ab aap online ja sakte hain aur orders receive kar sakte hain.',
+    });
+
+    res.json({ success: true, partner });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.rejectDeliveryPartner = async (req, res) => {
+  try {
+    const { reason } = req.body;
+    const partner = await DeliveryPartner.findById(req.params.id);
+    if (!partner) return res.status(404).json({ success: false, message: 'Partner not found' });
+
+    partner.isApproved = false;
+    partner.isOnline = false;
+    partner.isAvailable = false;
+    partner.kycStatus = 'rejected';
+    partner.kycRejectReason = reason || 'KYC documents not clear or invalid';
+    if (partner.kycDocuments) {
+      if (partner.kycDocuments.aadhaar) partner.kycDocuments.aadhaar.status = 'rejected';
+      if (partner.kycDocuments.pan) partner.kycDocuments.pan.status = 'rejected';
+    }
+    await partner.save();
+
+    await logAction(req, 'delivery_partner_rejected', 'DeliveryPartner', partner._id, { reason });
+    await Notification.create({
+      userId: partner.userId,
+      type: 'kyc',
+      title: 'KYC Verification Update',
+      message: reason || 'Aapke KYC documents reject kar diye gaye hain. Kripya sahi documents dobara upload karein.',
+    });
+
+    res.json({ success: true, partner });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.getDeliveryDashboard = async (req, res) => {
+  try {
+    const [totalPartners, onlinePartners, verifiedPartners, pendingKYC] = await Promise.all([
+      DeliveryPartner.countDocuments(),
+      DeliveryPartner.countDocuments({ isOnline: true }),
+      DeliveryPartner.countDocuments({ kycStatus: 'verified', isApproved: true }),
+      DeliveryPartner.countDocuments({ $or: [{ kycStatus: 'submitted' }, { kycStatus: 'pending' }, { isApproved: false }] }),
+    ]);
+
+    res.json({
+      success: true,
+      totalPartners,
+      onlinePartners,
+      verifiedPartners,
+      pendingKYC,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 

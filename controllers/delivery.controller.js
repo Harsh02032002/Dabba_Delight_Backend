@@ -495,7 +495,19 @@ exports.goOnline = async (req, res) => {
       console.log(`❌ No delivery partner found for user ID: ${req.user._id}`);
       return res.status(404).json({ success: false, message: 'Delivery partner not found' });
     }
-    
+
+    // Check KYC status & Admin Approval
+    if (currentPartner.kycStatus !== 'verified' || !currentPartner.isApproved) {
+      return res.status(403).json({
+        success: false,
+        message: currentPartner.kycStatus === 'submitted'
+          ? 'Aapke documents verification review me hain. Admin approval ke baad aap online ja sakte hain.'
+          : 'Online jaane ke liye pehle KYC verification complete karein (PAN & Aadhaar required).',
+        kycStatus: currentPartner.kycStatus,
+        isApproved: currentPartner.isApproved || false,
+      });
+    }
+
     console.log(`  - Current partner ID: ${currentPartner._id}`);
     console.log(`  - Current location in DB:`, currentPartner.currentLocation?.coordinates);
     console.log(`  - Current isOnline: ${currentPartner.isOnline}`);
@@ -886,6 +898,19 @@ exports.getAvailableOrders = async (req, res) => {
     if (!partner) partner = await DeliveryPartner.findById(req.user.deliveryPartnerId || req.user._id);
     if (!partner) return res.status(404).json({ success: false, message: 'Partner not found' });
 
+    // Restrict orders if KYC is not verified or account not approved
+    if (partner.kycStatus !== 'verified' || !partner.isApproved) {
+      return res.json({
+        success: true,
+        orders: [],
+        kycStatus: partner.kycStatus || 'pending',
+        isApproved: !!partner.isApproved,
+        message: partner.kycStatus === 'submitted'
+          ? 'Aapke KYC documents review me hain. Admin approval ke baad orders dikhenge.'
+          : 'Orders dekhne aur accept karne ke liye KYC documents submit karke verify karwayen.',
+      });
+    }
+
     // Orders this rider is delivering + unassigned orders the kitchen has confirmed
     const orders = await Order.find({
       $or: [
@@ -1000,6 +1025,13 @@ exports.acceptOrder = async (req, res) => {
 
     const partner = await getPartnerForUser(req.user);
     if (!partner) return res.status(404).json({ success: false, message: 'Delivery partner profile not found' });
+
+    if (partner.kycStatus !== 'verified' || !partner.isApproved) {
+      return res.status(403).json({
+        success: false,
+        message: 'Order accept karne ke liye verified rider account zaroori hai. Pehle KYC complete karein.',
+      });
+    }
 
     // ── 12 km rule: rider must be within SERVICE_RADIUS_KM of the customer ──
     const orderForCheck = await Order.findById(orderId).populate('sellerId', 'address businessName');
@@ -1281,3 +1313,146 @@ exports.calculateDeliveryFee = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+// ─── Rider KYC Verification ──────────────────────────────────────────
+
+exports.getKycStatus = async (req, res) => {
+  try {
+    let partner = await DeliveryPartner.findOne({ userId: req.user._id });
+    if (!partner) partner = await DeliveryPartner.findById(req.user.deliveryPartnerId || req.user._id);
+    if (!partner) return res.status(404).json({ success: false, message: 'Delivery partner not found' });
+
+    res.json({
+      success: true,
+      kycStatus: partner.kycStatus || 'pending',
+      isApproved: !!partner.isApproved,
+      kycDocuments: partner.kycDocuments || {},
+      kycRejectReason: partner.kycRejectReason || null,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.uploadKycDocument = async (req, res) => {
+  try {
+    const { type } = req.body;
+    const fileUrl = req.file?.s3Url || req.file?.location || req.file?.path || null;
+    if (!type || !fileUrl) {
+      return res.status(400).json({ success: false, message: 'Document type and file are required' });
+    }
+
+    let partner = await DeliveryPartner.findOne({ userId: req.user._id });
+    if (!partner) partner = await DeliveryPartner.findById(req.user.deliveryPartnerId || req.user._id);
+    if (!partner) return res.status(404).json({ success: false, message: 'Delivery partner not found' });
+
+    if (!partner.kycDocuments) partner.kycDocuments = {};
+    if (!partner.kycDocuments[type]) partner.kycDocuments[type] = {};
+
+    partner.kycDocuments[type].url = fileUrl;
+    partner.kycDocuments[type].status = 'uploaded';
+    partner.markModified('kycDocuments');
+    await partner.save();
+
+    res.json({
+      success: true,
+      url: fileUrl,
+      type,
+      kycDocuments: partner.kycDocuments,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.submitKycDocuments = async (req, res) => {
+  try {
+    const {
+      aadhaarNumber,
+      aadhaarUrl,
+      panNumber,
+      panUrl,
+      drivingLicenseNumber,
+      drivingLicenseUrl,
+      vehicleRCNumber,
+      vehicleRCUrl,
+    } = req.body;
+
+    let partner = await DeliveryPartner.findOne({ userId: req.user._id });
+    if (!partner) partner = await DeliveryPartner.findById(req.user.deliveryPartnerId || req.user._id);
+    if (!partner) return res.status(404).json({ success: false, message: 'Delivery partner not found' });
+
+    // Validate mandatory fields (PAN and Aadhaar)
+    const effectiveAadhaarNum = aadhaarNumber || partner.kycDocuments?.aadhaar?.number;
+    const effectiveAadhaarUrl = aadhaarUrl || partner.kycDocuments?.aadhaar?.url;
+    const effectivePanNum = panNumber || partner.kycDocuments?.pan?.number;
+    const effectivePanUrl = panUrl || partner.kycDocuments?.pan?.url;
+
+    if (!effectiveAadhaarNum || !effectiveAadhaarUrl) {
+      return res.status(400).json({
+        success: false,
+        message: 'Aadhaar card number aur image dono zaroori hain',
+      });
+    }
+
+    if (!effectivePanNum || !effectivePanUrl) {
+      return res.status(400).json({
+        success: false,
+        message: 'PAN card number aur image dono zaroori hain',
+      });
+    }
+
+    if (!partner.kycDocuments) partner.kycDocuments = {};
+
+    partner.kycDocuments.aadhaar = {
+      number: effectiveAadhaarNum,
+      url: effectiveAadhaarUrl,
+      status: 'uploaded',
+    };
+
+    partner.kycDocuments.pan = {
+      number: effectivePanNum,
+      url: effectivePanUrl,
+      status: 'uploaded',
+    };
+
+    const dlNum = drivingLicenseNumber || partner.kycDocuments?.drivingLicense?.number;
+    const dlUrl = drivingLicenseUrl || partner.kycDocuments?.drivingLicense?.url;
+    if (dlUrl || dlNum) {
+      partner.kycDocuments.drivingLicense = {
+        number: dlNum || '',
+        url: dlUrl || '',
+        status: dlUrl ? 'uploaded' : 'pending',
+      };
+      if (dlNum) partner.licenseNumber = dlNum;
+    }
+
+    const rcNum = vehicleRCNumber || partner.kycDocuments?.vehicleRC?.number;
+    const rcUrl = vehicleRCUrl || partner.kycDocuments?.vehicleRC?.url;
+    if (rcUrl || rcNum) {
+      partner.kycDocuments.vehicleRC = {
+        number: rcNum || '',
+        url: rcUrl || '',
+        status: rcUrl ? 'uploaded' : 'pending',
+      };
+      if (rcNum) partner.vehicleNumber = rcNum;
+    }
+
+    partner.kycStatus = 'submitted';
+    partner.isApproved = false;
+    partner.kycRejectReason = null;
+    partner.markModified('kycDocuments');
+    await partner.save();
+
+    console.log(`📄 [KYC Submitted] Partner ${partner.name} (${partner.phone}) submitted KYC for review`);
+
+    res.json({
+      success: true,
+      message: 'KYC documents successfully submit ho gaye hain! Admin review ke baad aapka account activate ho jayega.',
+      partner,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+

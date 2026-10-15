@@ -93,4 +93,11 @@ router.get('/performance/overview', adminAuth, ac.getPerformanceOverview);
 router.get('/config', adminAuth, ac.getPlatformConfig);
 router.put('/config', adminAuth, ac.updatePlatformConfig);
 
+// Delivery Partners Fleet & KYC
+router.get('/delivery-dashboard', adminAuth, ac.getDeliveryDashboard);
+router.get('/partners', adminAuth, ac.getDeliveryPartners);
+router.get('/partners/:id', adminAuth, ac.getDeliveryPartnerById);
+router.post('/partners/:id/approve', adminAuth, ac.approveDeliveryPartner);
+router.post('/partners/:id/reject', adminAuth, ac.rejectDeliveryPartner);
+
 module.exports = router;

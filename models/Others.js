@@ -370,6 +370,8 @@ const deliveryPartnerSchema = new mongoose.Schema(
     isAvailable: { type: Boolean, default: false },
     isOnline: { type: Boolean, default: false },
     isOnBreak: { type: Boolean, default: false },
+    isApproved: { type: Boolean, default: false },
+    kycRejectReason: { type: String, default: null },
     kycStatus: {
       type: String,
       enum: ["pending", "submitted", "verified", "rejected"],
@@ -377,6 +379,7 @@ const deliveryPartnerSchema = new mongoose.Schema(
     },
     kycDocuments: {
       aadhaar: {
+        number: String,
         url: String,
         status: {
           type: String,
@@ -385,6 +388,7 @@ const deliveryPartnerSchema = new mongoose.Schema(
         },
       },
       pan: {
+        number: String,
         url: String,
         status: {
           type: String,
@@ -393,6 +397,7 @@ const deliveryPartnerSchema = new mongoose.Schema(
         },
       },
       drivingLicense: {
+        number: String,
         url: String,
         status: {
           type: String,
@@ -401,6 +406,7 @@ const deliveryPartnerSchema = new mongoose.Schema(
         },
       },
       vehicleRC: {
+        number: String,
         url: String,
         status: {
           type: String,

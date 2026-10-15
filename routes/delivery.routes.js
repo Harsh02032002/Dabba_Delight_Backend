@@ -1,9 +1,13 @@
 const router = require('express').Router();
 const auth = require('../middleware/auth.middleware');
+const { s3Upload } = require('../middleware/s3-upload.middleware');
 const dc = require('../controllers/delivery.controller');
 
 // Original delivery routes
 router.post('/register', auth, dc.registerPartner);
+router.get('/kyc', auth, dc.getKycStatus);
+router.post('/kyc/document', auth, ...s3Upload('document', 'rider-kyc'), dc.uploadKycDocument);
+router.post('/kyc/submit', auth, dc.submitKycDocuments);
 router.patch('/go-online', auth, dc.goOnline);
 router.patch('/go-offline', auth, dc.goOffline);
 router.patch('/location', auth, dc.updateLocation);
