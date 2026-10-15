@@ -54,7 +54,7 @@ test('rider leg rejects invalid or repeated steps', () => {
   assert.equal(repeat.ok, false);
   assert.equal(repeat.idempotent, true);
   assert.equal(validateRiderTransition({ status: 'cancelled', deliveryStatus: 'assigned' }, 'picked_up').ok, false);
-  assert.equal(validateRiderTransition({ status: 'pending', deliveryStatus: 'assigned' }, 'picked_up').ok, false);
+  assert.equal(validateRiderTransition({ status: 'delivered', deliveryStatus: 'assigned' }, 'picked_up').ok, false);
 });
 
 test('delivery completion requires pickup and is idempotent', () => {
