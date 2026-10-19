@@ -1336,8 +1336,8 @@ exports.getKycStatus = async (req, res) => {
 
 exports.uploadKycDocument = async (req, res) => {
   try {
-    const { type } = req.body;
-    const fileUrl = req.file?.s3Url || req.file?.location || req.file?.path || null;
+    const type = req.body?.type || req.query?.type;
+    const fileUrl = req.file?.s3Url || req.file?.location || req.file?.path || req.body?.url || req.body?.fileUrl || req.body?.image || null;
     if (!type || !fileUrl) {
       return res.status(400).json({ success: false, message: 'Document type and file are required' });
     }
