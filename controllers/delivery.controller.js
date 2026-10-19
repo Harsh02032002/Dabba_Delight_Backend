@@ -195,7 +195,7 @@ async function resolvePartnerAccount(rawInput) {
       if (existingPartner) {
         user = cand;
         partner = existingPartner;
-        if (user.role !== 'delivery') {
+        if (user.role !== 'delivery' && user.role !== 'admin') {
           user.role = 'delivery';
           await user.save();
         }
@@ -210,11 +210,11 @@ async function resolvePartnerAccount(rawInput) {
     if (user) {
       partner = await DeliveryPartner.findOne({ userId: user._id });
       if (partner) {
-        if (user.role !== 'delivery') {
+        if (user.role !== 'delivery' && user.role !== 'admin') {
           user.role = 'delivery';
           await user.save();
         }
-      } else if (user.role !== 'delivery') {
+      } else if (user.role !== 'delivery' && user.role !== 'admin') {
         return { error: { code: 403, message: 'This phone number belongs to a customer/seller account. Please register as a Rider Partner or use your registered Rider phone number.' } };
       }
     }
