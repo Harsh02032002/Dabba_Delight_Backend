@@ -679,6 +679,21 @@ exports.approveDeliveryPartner = async (req, res) => {
       message: 'Aapka Rider account approve ho gaya hai! Ab aap online ja sakte hain aur orders receive kar sakte hain.',
     });
 
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('partner:kyc_approved', {
+        partnerId: String(partner._id),
+        userId: String(partner.userId),
+        isApproved: true,
+        kycStatus: 'verified',
+        message: 'Aapka Rider account approve ho gaya hai! Ab aap online ja sakte hain aur orders receive kar sakte hain.'
+      });
+      io.to(`partner_${partner._id}`).emit('partner:kyc_approved', { partner });
+      if (partner.userId) {
+        io.to(String(partner.userId)).emit('partner:kyc_approved', { partner });
+      }
+    }
+
     res.json({ success: true, partner });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -709,6 +724,21 @@ exports.rejectDeliveryPartner = async (req, res) => {
       title: 'KYC Verification Update',
       message: reason || 'Aapke KYC documents reject kar diye gaye hain. Kripya sahi documents dobara upload karein.',
     });
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('partner:kyc_rejected', {
+        partnerId: String(partner._id),
+        userId: String(partner.userId),
+        isApproved: false,
+        kycStatus: 'rejected',
+        reason: partner.kycRejectReason,
+      });
+      io.to(`partner_${partner._id}`).emit('partner:kyc_rejected', { partner });
+      if (partner.userId) {
+        io.to(String(partner.userId)).emit('partner:kyc_rejected', { partner });
+      }
+    }
 
     res.json({ success: true, partner });
   } catch (err) {
