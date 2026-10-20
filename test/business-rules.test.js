@@ -77,9 +77,9 @@ describe('seller eligibility', () => {
   });
 });
 
-describe('geographic distance and the 21 km radius', () => {
-  test('service radius is 21 km', () => {
-    assert.equal(SERVICE_RADIUS_KM, 21);
+describe('geographic distance and the 12 km radius', () => {
+  test('service radius is 12 km', () => {
+    assert.equal(SERVICE_RADIUS_KM, 12);
   });
 
   test('haversine matches known distances', () => {
@@ -91,21 +91,24 @@ describe('geographic distance and the 21 km radius', () => {
     assert.ok(delhi > 230 && delhi < 250, String(delhi));
   });
 
-  test('boundary is inclusive: 21 km in, anything above out', () => {
-    assert.equal(isWithinServiceRadius(21), true);
-    assert.equal(isWithinServiceRadius(20.999), true);
-    assert.equal(isWithinServiceRadius(21.001), false);
+  test('boundary is inclusive: 12 km in, anything above out', () => {
+    assert.equal(isWithinServiceRadius(11.9), true);
+    assert.equal(isWithinServiceRadius(12), true);
+    assert.equal(isWithinServiceRadius(11.999), true);
+    assert.equal(isWithinServiceRadius(12.001), false);
+    assert.equal(isWithinServiceRadius(12.1), false);
     assert.equal(isWithinServiceRadius(NaN), false);
     assert.equal(isWithinServiceRadius(-1), false);
-    assert.equal(isWithinServiceRadius(haversineKm(SECTOR_17, northOf(SECTOR_17, 20.95))), true);
-    assert.equal(isWithinServiceRadius(haversineKm(SECTOR_17, northOf(SECTOR_17, 21.05))), false);
+    assert.equal(isWithinServiceRadius(haversineKm(SECTOR_17, northOf(SECTOR_17, 11.95))), true);
+    assert.equal(isWithinServiceRadius(haversineKm(SECTOR_17, northOf(SECTOR_17, 12.05))), false);
   });
 
   test('clients cannot widen the radius', () => {
-    assert.equal(clampRadiusKm(50000), 21);
+    assert.equal(clampRadiusKm(50000), 12);
     assert.equal(clampRadiusKm(12000), 12);
-    assert.equal(clampRadiusKm(undefined), 21);
-    assert.equal(clampRadiusKm('abc'), 21);
+    assert.equal(clampRadiusKm(8000), 8);
+    assert.equal(clampRadiusKm(undefined), 12);
+    assert.equal(clampRadiusKm('abc'), 12);
   });
 
   test('invalid coordinates are rejected', () => {
@@ -119,11 +122,11 @@ describe('geographic distance and the 21 km radius', () => {
   test('delivery pricing is serviceable up to the radius and not beyond', () => {
     assert.equal(getCustomerDeliveryFee(3), 30);
     assert.equal(getCustomerDeliveryFee(5), 45);
+    assert.equal(getCustomerDeliveryFee(11.9), 60);
     assert.equal(getCustomerDeliveryFee(12), 60);
-    assert.equal(getCustomerDeliveryFee(18), 60); // beyond the last slab: last slab's fee
-    assert.equal(getCustomerDeliveryFee(21, undefined, 21), 60);
-    assert.equal(getCustomerDeliveryFee(21.5, undefined, 21), null);
-    const far = computeDeliveryPricing(SECTOR_17, northOf(SECTOR_17, 25), undefined, 21);
+    assert.equal(getCustomerDeliveryFee(12.1), null);
+    assert.equal(getCustomerDeliveryFee(18), null);
+    const far = computeDeliveryPricing(SECTOR_17, northOf(SECTOR_17, 25));
     assert.equal(far.serviceable, false);
   });
 });
