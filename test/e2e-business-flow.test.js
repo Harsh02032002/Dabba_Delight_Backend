@@ -689,3 +689,18 @@ test('subscription purchase: price from the plan, wallet must cover it, online p
   const gone = await api('POST', '/subscriptions/purchase', { token, body: { planId: String(inactive._id), sellerId: state.seller.sellerId, usedWallet: true, walletAmount: 100 } });
   assert.equal(gone.status, 400);
 });
+
+test('admin GST report lists this period\'s orders with their tax and a seller-wise total', async () => {
+  const forbidden = await api('GET', '/admin/gst/reports?period=monthly', { token: state.customer.token });
+  assert.ok([401, 403].includes(forbidden.status));
+  const r = await api('GET', '/admin/gst/reports?period=monthly', { token: state.adminToken });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.ok(r.body.orders.length > 0);
+  const row = r.body.orders.find(o => o._id === state.orderId);
+  assert.ok(row, 'order placed this month is in the report');
+  const stored = await Order.findById(state.orderId).lean();
+  assert.equal(Math.round((row.cgstTotal + row.sgstTotal) * 100), Math.round(((stored.cgst || 0) + (stored.sgst || 0) + (stored.igst || 0)) * 100));
+  const seller = r.body.sellerWise.find(s => String(s._id) === state.seller.sellerId);
+  assert.ok(seller && seller.totalOrders >= 1);
+  assert.equal((await api('GET', '/admin/gst/reports?period=nonsense', { token: state.adminToken })).body.period, 'monthly');
+});
