@@ -262,10 +262,27 @@ exports.createSeller = async (req, res) => {
   }
 };
 
+exports.getSellerById = async (req, res) => {
+  try {
+    if (!require('mongoose').Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ success: false, message: 'Seller not found' });
+    const seller = await Seller.findById(req.params.id).populate('userId', 'name email phone avatar isVerified isBlocked');
+    if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+    res.json({ success: true, seller });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
+exports.getReviews = async (req, res) => {
+  try {
+    const { Review } = require('../models/Others');
+    const reviews = await Review.find().populate('userId', 'name').populate('sellerId', 'businessName').sort({ createdAt: -1 });
+    res.json({ success: true, reviews });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
 exports.approveSeller = async (req, res) => {
   try {
     if (!require('mongoose').Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ success: false, message: 'Seller not found' });
-    const seller = await Seller.findByIdAndUpdate(req.params.id, { isActive: true, isVerified: true, kycStatus: 'verified' }, { new: true });
+    const seller = await Seller.findByIdAndUpdate(req.params.id, { isActive: true, isVerified: true, kycStatus: 'verified', $unset: { kycRejectReason: 1 } }, { new: true });
     if (!seller) return res.status(404).json({ message: 'Seller not found' });
     await logAction(req, 'seller_approved', 'Seller', seller._id, { businessName: seller.businessName });
     await Notification.create({ userId: seller.userId, type: 'kyc', title: 'KYC Approved', message: 'Your seller account has been verified.' });
@@ -276,9 +293,11 @@ exports.approveSeller = async (req, res) => {
 exports.rejectSeller = async (req, res) => {
   try {
     if (!require('mongoose').Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ success: false, message: 'Seller not found' });
-    const seller = await Seller.findByIdAndUpdate(req.params.id, { isActive: false, kycStatus: 'rejected' }, { new: true });
+    const reason = String(req.body?.reason || '').trim().slice(0, 500);
+    const seller = await Seller.findByIdAndUpdate(req.params.id, { isActive: false, isVerified: false, kycStatus: 'rejected', kycRejectReason: reason || undefined }, { new: true });
     if (!seller) return res.status(404).json({ message: 'Seller not found' });
-    await logAction(req, 'seller_rejected', 'Seller', seller._id);
+    await logAction(req, 'seller_rejected', 'Seller', seller._id, { reason });
+    await Notification.create({ userId: seller.userId, type: 'kyc', title: 'KYC Rejected', message: reason ? `Your KYC was rejected: ${reason}` : 'Your KYC was rejected. Please re-upload your documents.' });
     res.json({ success: true, seller });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
