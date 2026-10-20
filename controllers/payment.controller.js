@@ -100,6 +100,29 @@ const isValidRazorpaySignature = (razorpayOrderId, razorpayPaymentId, razorpaySi
 };
 exports.isValidRazorpaySignature = isValidRazorpaySignature;
 
+/**
+ * Confirms a Razorpay checkout response for an exact amount (signature + amount actually paid).
+ * Returns { ok: true } or { ok: false, status, message }. Used for subscription purchases.
+ */
+exports.confirmRazorpayPayment = async ({ razorpayOrderId, razorpayPaymentId, razorpaySignature, amountPaise }) => {
+  const secret = process.env.RAZORPAY_KEY_SECRET || 'N5tamdzyBKMT2E1M2TVR01PT';
+  if (!isValidRazorpaySignature(razorpayOrderId, razorpayPaymentId, razorpaySignature, secret)) {
+    return { ok: false, status: 400, message: 'Payment could not be verified' };
+  }
+  if (!razorpay) return { ok: false, status: 502, message: 'Payment gateway is not configured' };
+  let rzpOrder;
+  try {
+    rzpOrder = await razorpay.orders.fetch(razorpayOrderId);
+  } catch (err) {
+    console.error('Razorpay order lookup failed:', err.message);
+    return { ok: false, status: 502, message: 'Could not confirm the payment with Razorpay. Please try again in a moment.' };
+  }
+  if (Number(rzpOrder?.amount_paid) !== Number(amountPaise)) {
+    return { ok: false, status: 400, message: 'Payment amount does not match this plan' };
+  }
+  return { ok: true };
+};
+
 // POST /api/payment/razorpay/verify
 // With { orderId } a valid payment for the right amount marks that order paid.
 exports.verifyRazorpayPayment = async (req, res) => {
