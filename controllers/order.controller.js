@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { settleDeliveredOrder } = require('../services/order-settlement.service');
 const Order = require('../models/Order');
 const Seller = require('../models/Seller');
 const User = require('../models/User');
@@ -687,49 +688,8 @@ exports.updateOrderStatus = async (req, res) => {
     }
 
     if (status === 'delivered') {
-      if (order.paymentMethod === 'cod') { await generateInvoice(order); }
-
-      // NEW WALLET SYSTEM: Process payment through wallet controller
-      try {
-        console.log('💰 Processing order payment through wallet system:', order.orderNumber);
-
-        // Only process if payment was made (not COD pending)
-        if (order.paymentStatus === 'paid') {
-          await walletController.processOrderPayment({
-            orderId: order._id,
-            userId: order.userId,
-            sellerId: order.sellerId?._id || order.sellerId,
-            totalAmount: order.total,
-            paymentMethod: order.paymentMethod,
-            orderNumber: order.orderNumber,
-            itemsCount: order.items?.length || 0
-          });
-
-          console.log('✅ Order payment processed through wallet system');
-        }
-      } catch (walletError) {
-        console.error('❌ Wallet processing error:', walletError);
-        // Don't fail the order update if wallet processing fails
-        // It can be reconciled later
-      }
-
-      // ─── Cashback to customer (2% of order total) ──────
-      try {
-        const cashbackRate = 0.02; // 2%
-        const cashback = Math.round(order.total * cashbackRate);
-        if (cashback > 0) {
-          const cbCustomer = await User.findByIdAndUpdate(order.userId, { $inc: { wallet: cashback } }, { new: true });
-          await WalletTransaction.create({
-            userId: order.userId, type: 'credit', amount: cashback,
-            description: `Cashback for order #${order.orderNumber}`,
-            referenceId: order._id.toString(), referenceType: 'order', balance: cbCustomer.wallet,
-          });
-          await Notification.create({
-            userId: order.userId, type: 'wallet',
-            title: 'Cashback Received! 🎉', message: `₹${cashback} cashback credited for order #${order.orderNumber}`,
-          });
-        }
-      } catch (cbErr) { console.error('Cashback error:', cbErr.message); }
+      // Invoice, seller/admin split and cashback — exactly once, shared with rider OTP delivery
+      await settleDeliveredOrder(order._id).catch((e) => console.error('settleDeliveredOrder error:', e.message));
 
       await pushNotification.notifyOrderDelivered({ order, customer, rider: null, io });
     }
