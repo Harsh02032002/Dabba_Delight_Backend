@@ -14,6 +14,10 @@ const subscriptionSchema = new mongoose.Schema(
     status: { type: String, enum: ['active', 'expired'], default: 'active', index: true },
     seller_name: { type: String }, // Denormalized seller name for quick display
     seller_type: { type: String, enum: ['home_chef', 'restaurant', 'cloud_kitchen', 'catering'] },
+    // How it was paid: wallet amount + verified Razorpay payment (payment_id is unique per purchase)
+    paid_from_wallet: { type: Number, default: 0 },
+    paid_online: { type: Number, default: 0 },
+    payment_id: { type: String, index: { unique: true, sparse: true } },
   },
   { timestamps: true, collection: 'subscriptions' },
 );

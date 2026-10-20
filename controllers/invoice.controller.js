@@ -57,10 +57,20 @@ exports.generateInvoiceForOrder = async (req, res) => {
 // GET /api/invoice/:invoiceId
 exports.getInvoice = async (req, res) => {
   try {
-    const invoice = mongoose.Types.ObjectId.isValid(String(req.params.invoiceId))
+        let invoice = mongoose.Types.ObjectId.isValid(String(req.params.invoiceId))
       ? await Invoice.findById(req.params.invoiceId)
         .populate('orderId').populate('userId', 'name email').populate('sellerId', 'businessName')
       : null;
+    if (!invoice && mongoose.Types.ObjectId.isValid(String(req.params.invoiceId))) {
+      invoice = await Invoice.findOne({ orderId: req.params.invoiceId })
+        .populate('orderId').populate('userId', 'name email').populate('sellerId', 'businessName');
+    }
+    if (!invoice && mongoose.Types.ObjectId.isValid(String(req.params.invoiceId))) {
+      const order = await findOrder(req.params.invoiceId)?.populate('userId', 'name email phone').populate('sellerId', 'businessName email phone logo type gstNumber fssaiLicense address');
+      if (order && (await canAccessOrder(req.user, order))) {
+        invoice = await generateInvoice(order);
+      }
+    }
     if (!invoice || !(await canAccessOrder(req.user, invoice.orderId))) return res.status(404).json({ message: 'Invoice not found' });
     res.json({ success: true, invoice });
   } catch (err) {

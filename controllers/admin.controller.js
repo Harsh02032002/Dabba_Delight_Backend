@@ -262,10 +262,27 @@ exports.createSeller = async (req, res) => {
   }
 };
 
+exports.getSellerById = async (req, res) => {
+  try {
+    if (!require('mongoose').Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ success: false, message: 'Seller not found' });
+    const seller = await Seller.findById(req.params.id).populate('userId', 'name email phone avatar isVerified isBlocked');
+    if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+    res.json({ success: true, seller });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
+exports.getReviews = async (req, res) => {
+  try {
+    const { Review } = require('../models/Others');
+    const reviews = await Review.find().populate('userId', 'name').populate('sellerId', 'businessName').sort({ createdAt: -1 });
+    res.json({ success: true, reviews });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
 exports.approveSeller = async (req, res) => {
   try {
     if (!require('mongoose').Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ success: false, message: 'Seller not found' });
-    const seller = await Seller.findByIdAndUpdate(req.params.id, { isActive: true, isVerified: true, kycStatus: 'verified' }, { new: true });
+    const seller = await Seller.findByIdAndUpdate(req.params.id, { isActive: true, isVerified: true, kycStatus: 'verified', $unset: { kycRejectReason: 1 } }, { new: true });
     if (!seller) return res.status(404).json({ message: 'Seller not found' });
     await logAction(req, 'seller_approved', 'Seller', seller._id, { businessName: seller.businessName });
     await Notification.create({ userId: seller.userId, type: 'kyc', title: 'KYC Approved', message: 'Your seller account has been verified.' });
@@ -276,9 +293,11 @@ exports.approveSeller = async (req, res) => {
 exports.rejectSeller = async (req, res) => {
   try {
     if (!require('mongoose').Types.ObjectId.isValid(req.params.id)) return res.status(404).json({ success: false, message: 'Seller not found' });
-    const seller = await Seller.findByIdAndUpdate(req.params.id, { isActive: false, kycStatus: 'rejected' }, { new: true });
+    const reason = String(req.body?.reason || '').trim().slice(0, 500);
+    const seller = await Seller.findByIdAndUpdate(req.params.id, { isActive: false, isVerified: false, kycStatus: 'rejected', kycRejectReason: reason || undefined }, { new: true });
     if (!seller) return res.status(404).json({ message: 'Seller not found' });
-    await logAction(req, 'seller_rejected', 'Seller', seller._id);
+    await logAction(req, 'seller_rejected', 'Seller', seller._id, { reason });
+    await Notification.create({ userId: seller.userId, type: 'kyc', title: 'KYC Rejected', message: reason ? `Your KYC was rejected: ${reason}` : 'Your KYC was rejected. Please re-upload your documents.' });
     res.json({ success: true, seller });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
@@ -791,5 +810,75 @@ exports.setOrderPaymentStatus = async (req, res) => {
     await order.save();
     await logAction(req, `order_payment_${status}`, 'Order', order._id, { orderNumber: order.orderNumber });
     res.json({ success: true, order });
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
+// ─── GST reports (Admin → GST → Reports) ─────────────────────────────
+const GST_REPORT_PERIODS = {
+  daily: (now) => new Date(now.getFullYear(), now.getMonth(), now.getDate()),
+  weekly: (now) => { const d = new Date(now.getFullYear(), now.getMonth(), now.getDate()); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d; },
+  monthly: (now) => new Date(now.getFullYear(), now.getMonth(), 1),
+  quarterly: (now) => new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1),
+  // Indian financial year starts 1 April
+  yearly: (now) => new Date(now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1, 3, 1),
+};
+
+// GET /api/admin/gst/reports?period=daily|weekly|monthly|quarterly|yearly
+exports.getGSTReports = async (req, res) => {
+  try {
+    const period = GST_REPORT_PERIODS[req.query.period] ? req.query.period : 'monthly';
+    const now = new Date();
+    const from = GST_REPORT_PERIODS[period](now);
+    const { Invoice } = require('../models/Others');
+
+    const orders = await Order.find({ createdAt: { $gte: from, $lte: now }, status: { $ne: 'cancelled' } })
+      .select('orderNumber status sellerId createdAt total cgst sgst igst gstAmount commissionGST')
+      .populate('sellerId', 'businessName gstNumber')
+      .sort({ createdAt: -1 })
+      .limit(1000)
+      .lean();
+    const invoices = await Invoice.find({ orderId: { $in: orders.map((o) => o._id) } }).select('orderId invoiceNumber createdAt').lean();
+    const invoiceByOrder = new Map(invoices.map((i) => [String(i.orderId), i]));
+
+    const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+    const rows = orders.map((o) => {
+      const inv = invoiceByOrder.get(String(o._id));
+      // Inter-state orders carry IGST; show it split evenly so CGST + SGST still equals the tax charged
+      const igstHalf = round2((o.igst || 0) / 2);
+      return {
+        _id: o._id,
+        orderNumber: o.orderNumber,
+        status: o.status,
+        sellerId: o.sellerId ? { _id: o.sellerId._id, businessName: o.sellerId.businessName } : null,
+        sellerGstin: o.sellerId?.gstNumber || null,
+        createdAt: o.createdAt,
+        total: round2(o.total),
+        cgstTotal: round2((o.cgst || 0) + igstHalf),
+        sgstTotal: round2((o.sgst || 0) + igstHalf),
+        igstTotal: round2(o.igst),
+        commissionGst: round2(o.commissionGST),
+        invoiceNumber: inv?.invoiceNumber || null,
+        invoiceDate: inv?.createdAt || null,
+      };
+    });
+
+    const bySeller = new Map();
+    for (const r of rows) {
+      if (!r.sellerId) continue;
+      const key = String(r.sellerId._id);
+      const s = bySeller.get(key) || { _id: r.sellerId._id, businessName: r.sellerId.businessName, gstNumber: r.sellerGstin, totalOrders: 0, totalGST: 0 };
+      s.totalOrders += 1;
+      s.totalGST = round2(s.totalGST + r.cgstTotal + r.sgstTotal);
+      bySeller.set(key, s);
+    }
+
+    res.json({
+      success: true,
+      period,
+      from,
+      to: now,
+      orders: rows,
+      sellerWise: [...bySeller.values()].sort((a, b) => b.totalGST - a.totalGST),
+    });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };

@@ -5,7 +5,7 @@ const walletTransactionSchema = new mongoose.Schema({
   type: { type: String, enum: ['credit', 'debit'], required: true },
   amount: { type: Number, required: true },
   description: { type: String, required: true },
-  referenceType: { type: String, enum: ['topup', 'order', 'refund', 'withdrawal'] },
+  referenceType: { type: String, enum: ['topup', 'order', 'refund', 'withdrawal', 'subscription'] },
   balance: { type: Number, required: true },
   orderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' },
   razorpayOrderId: { type: String },

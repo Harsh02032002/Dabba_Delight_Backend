@@ -41,11 +41,14 @@ const sellerSchema = new mongoose.Schema({
   isVerified: { type: Boolean, default: false },
   kycStatus: { type: String, enum: ['pending', 'submitted', 'verified', 'rejected'], default: 'pending' },
   kycDocuments: {
-    aadhaar: { url: String, status: String },
-    pan: { url: String, status: String },
-    fssai: { url: String, status: String },
-    bankProof: { url: String, status: String },
+    aadhaar: { url: String, status: String, uploadedAt: Date },
+    pan: { url: String, status: String, uploadedAt: Date },
+    fssai: { url: String, status: String, uploadedAt: Date },
+    gst: { url: String, status: String, uploadedAt: Date },
+    bankProof: { url: String, status: String, uploadedAt: Date },
   },
+  kycSubmittedAt: Date,
+  kycRejectReason: String,
   bankDetails: {
     accountNumber: String,
     ifscCode: String,

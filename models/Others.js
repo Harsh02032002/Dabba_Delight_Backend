@@ -418,6 +418,8 @@ const deliveryPartnerSchema = new mongoose.Schema(
     rating: { type: Number, default: 5.0 },
     totalDeliveries: { type: Number, default: 0 },
     earnings: { type: Number, default: 0 },
+    // Withdrawable balance: delivery payouts in, withdrawals out
+    wallet: { type: Number, default: 0, min: 0 },
     todayEarnings: { type: Number, default: 0 },
     weekEarnings: { type: Number, default: 0 },
     bankDetails: {
@@ -949,7 +951,7 @@ const walletTransactionSchema = new mongoose.Schema(
     referenceId: String,
     referenceType: {
       type: String,
-      enum: ["order", "refund", "referral", "topup", "settlement", "delivery_payout", "withdrawal"],
+      enum: ["order", "refund", "referral", "topup", "settlement", "delivery_payout", "withdrawal", "subscription"],
     },
     balance: Number,
   },

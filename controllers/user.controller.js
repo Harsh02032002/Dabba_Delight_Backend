@@ -503,6 +503,7 @@ exports.getOrderTracking = async (req, res) => {
         orderNumber: order.orderNumber,
         status: order.status,
         deliveryStatus: order.deliveryStatus || null,
+        deliveryOtp: order.deliveryOtp || null,
         riderAssignedAt: order.riderAssignedAt || null,
         pickedUpAt: order.pickedUpAt || null,
         actualDelivery: order.actualDelivery || null,

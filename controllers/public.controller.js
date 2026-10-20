@@ -37,7 +37,15 @@ exports.getPublicGSTSettings = async (req, res) => {
 exports.getPublicPlatformConfig = async (req, res) => {
   try {
     let c = await PlatformConfig.findOne();
-    const o = typeof c.toObject === "function" ? c.toObject() : c;
+    if (!c) {
+      c = await PlatformConfig.create({
+        platformName: "Dabba Nation",
+        platformFee: 5,
+        deliveryFee: 40,
+        freeDeliveryThreshold: 500,
+      }).catch(() => null);
+    }
+    const o = c && typeof c.toObject === "function" ? c.toObject() : (c || {});
     res.json({
       success: true,
       // Fees

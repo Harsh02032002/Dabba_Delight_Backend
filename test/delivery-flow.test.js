@@ -9,7 +9,7 @@ process.env.RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || 'dummy';
 const { test, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const mongoose = require('mongoose');
-const { MongoMemoryServer } = require('mongodb-memory-server');
+const { MongoMemoryReplSet } = require('mongodb-memory-server');
 
 const Order = require('../models/Order');
 const User = require('../models/User');
@@ -84,7 +84,7 @@ const mkOrder = (extra = {}) => Order.create({
 const notificationsFor = (userId, title) => Notification.find({ userId, ...(title ? { title } : {}) }).lean();
 
 before(async () => {
-  mongod = await MongoMemoryServer.create();
+  mongod = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await mongoose.connect(mongod.getUri());
   await Promise.all([Order.init(), User.init(), Seller.init(), DeliveryPartner.init(), Notification.init(), WalletTransaction.init()]);
 });
@@ -186,9 +186,12 @@ test('pickup → out for delivery → OTP delivery credits the rider exactly onc
   const orderId = order._id.toString();
   await call(deliveryController.acceptOrder, { params: { orderId }, user: a.user, io });
 
+  const realOtp = (await Order.findById(orderId).lean()).deliveryOtp;
+  assert.match(realOtp, /^\d{4}$/);
+
   // Delivery cannot be confirmed before pickup
-  const early = await call(deliveryController.confirmDeliveryOTP, { body: { orderId, otp: '1234' }, user: a.user, io });
-  assert.equal(early.status, 409);
+  const early = await call(deliveryController.confirmDeliveryOTP, { body: { orderId, otp: realOtp }, user: a.user, io });
+  assert.equal(early.status, 409, JSON.stringify(early.body));
 
   // Another rider cannot drive this order
   const other = await mkRider(NEAR_RIDER, 'Other');
@@ -204,10 +207,19 @@ test('pickup → out for delivery → OTP delivery credits the rider exactly onc
   assert.equal(picked.body.order.status, 'out_for_delivery');
   assert.equal((await notificationsFor(customer._id, 'Out for Delivery')).length, 1);
 
+  // Only the customer's OTP completes the delivery; there is no universal fallback code
+  for (const guess of ['1234', '0000'].filter(g => g !== realOtp)) {
+    const wrong = await call(deliveryController.confirmDeliveryOTP, { body: { orderId, otp: guess }, user: a.user, io });
+    assert.equal(wrong.status, 400, `OTP ${guess} must be rejected`);
+  }
+  const skip = await call(deliveryController.updateDeliveryStatus, { body: { orderId, status: 'delivered' }, user: a.user, io });
+  assert.equal(skip.status, 400, 'status update cannot complete a delivery without the OTP');
+  assert.equal((await Order.findById(orderId).lean()).status, 'out_for_delivery');
+
   // Double tap / retry: both succeed, money moves once
   const [d1, d2] = await Promise.all([
-    call(deliveryController.confirmDeliveryOTP, { body: { orderId, otp: '1234' }, user: a.user, io }),
-    call(deliveryController.confirmDeliveryOTP, { body: { orderId, otp: '1234' }, user: a.user, io }),
+    call(deliveryController.confirmDeliveryOTP, { body: { orderId, otp: realOtp }, user: a.user, io }),
+    call(deliveryController.confirmDeliveryOTP, { body: { orderId, otp: realOtp }, user: a.user, io }),
   ]);
   assert.equal(d1.status, 200);
   assert.equal(d2.status, 200);
@@ -217,7 +229,7 @@ test('pickup → out for delivery → OTP delivery credits the rider exactly onc
   const rider = await DeliveryPartner.findById(a.partner._id);
   assert.equal(rider.earnings, 40, 'riderPayout credited once');
   assert.equal(rider.todayEarnings, 40);
-  // Note: DeliveryPartner has no `wallet` path in its schema, so wallet writes are dropped by Mongoose
+  assert.equal(rider.wallet, 40, 'payout lands in the withdrawable wallet');
   assert.equal(rider.totalDeliveries, 1);
   assert.equal(rider.activeOrderId, null);
   assert.equal(await WalletTransaction.countDocuments({ deliveryPartnerId: a.partner._id, referenceType: 'delivery_payout' }), 1);
@@ -227,6 +239,40 @@ test('pickup → out for delivery → OTP delivery credits the rider exactly onc
   assert.equal(saved.paymentStatus, 'paid');
   assert.equal((await notificationsFor(customer._id, 'Order Delivered! Enjoy your meal')).length, 1);
   assert.equal((await notificationsFor(a.user._id, 'Delivery Completed')).length, 1);
+
+  // Rider-completed delivery settles the seller exactly once (it used to only happen on seller self-delivery)
+  const SellerWallet = require('../models/SellerWallet');
+  assert.ok(saved.sellerSettledAt, 'order is marked settled');
+  const sw = await SellerWallet.findOne({ seller_id: seller._id }).lean();
+  assert.ok(sw && sw.total_earnings > 0 && sw.total_earnings <= 175, `seller credited: ${JSON.stringify(sw)}`);
+  const cashback = await WalletTransaction.find({ userId: customer._id, description: /Cashback for order/ }).lean();
+  assert.equal(cashback.length, 1, 'customer cashback once');
+  const { settleDeliveredOrder } = require('../services/order-settlement.service');
+  assert.equal((await settleDeliveredOrder(orderId)).settled, false, 'second settlement is a no-op');
+  assert.equal((await SellerWallet.findOne({ seller_id: seller._id }).lean()).total_earnings, sw.total_earnings);
+});
+
+test('rider withdrawals never exceed the wallet balance', async () => {
+  const io = makeIo();
+  const r = await mkRider(NEAR_RIDER, 'Wallet');
+  await DeliveryPartner.updateOne({ _id: r.partner._id }, { $set: { wallet: 100 } });
+
+  const tooMuch = await call(deliveryController.withdrawFromWallet, { body: { amount: 150 }, user: r.user, io });
+  assert.equal(tooMuch.status, 400);
+  for (const bad of [0, -5, 'abc']) {
+    const res = await call(deliveryController.withdrawFromWallet, { body: { amount: bad }, user: r.user, io });
+    assert.equal(res.status, 400, `amount ${bad} rejected`);
+  }
+  assert.equal((await DeliveryPartner.findById(r.partner._id)).wallet, 100);
+
+  // Two withdrawals of 70 at the same time: only one fits in 100
+  const results = await Promise.all([
+    call(deliveryController.withdrawFromWallet, { body: { amount: 70 }, user: r.user, io }),
+    call(deliveryController.withdrawFromWallet, { body: { amount: 70 }, user: r.user, io }),
+  ]);
+  assert.deepEqual(results.map((x) => x.status).sort(), [200, 400]);
+  assert.equal((await DeliveryPartner.findById(r.partner._id)).wallet, 30);
+  assert.equal(await WalletTransaction.countDocuments({ deliveryPartnerId: r.partner._id, referenceType: 'withdrawal' }), 1);
 });
 
 test('customer cancellation releases the assigned rider and cannot be repeated', async () => {

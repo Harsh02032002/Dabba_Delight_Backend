@@ -88,7 +88,7 @@ async function sendSmsOTP(phone, otp) {
  */
 async function sendDualOTP({ user, otp, purpose = 'Login Verification' }) {
   if (user?.email) {
-    await sendEmail({
+    sendEmail({
       to: user.email,
       subject: `${otp} is your Dabba Nation ${purpose} OTP`,
       html: `

@@ -3,7 +3,7 @@
  * (isolated in-memory MongoDB, no third-party services).
  *
  *   seller registers (pending) → excluded from discovery → admin approves → seller adds menu →
- *   customer registers → website + app discovery agree (21 km rule) → order placed and
+ *   customer registers → website + app discovery agree (12 km rule) → order placed and
  *   validated server-side → receipt identical for website, app and stored order.
  *
  * Human-only step: email/SMS verification OTP. The test reads the code the server generated
@@ -28,8 +28,8 @@ const Order = require('../models/Order');
 const CUSTOMER_POINT = [76.7720, 30.7320]; // Sector 22, Chandigarh
 const NEAR_POINT = [76.7794, 30.7333]; // Sector 17, ~0.7 km
 const northOf = ([lng, lat], km) => [lng, lat + (km / 6371) * (180 / Math.PI)];
-const JUST_INSIDE = northOf(CUSTOMER_POINT, 20.95);
-const JUST_OUTSIDE = northOf(CUSTOMER_POINT, 21.05);
+const JUST_INSIDE = northOf(CUSTOMER_POINT, 11.95);
+const JUST_OUTSIDE = northOf(CUSTOMER_POINT, 12.05);
 const PASSWORD = 'Test-pass-123';
 
 let server;
@@ -232,6 +232,66 @@ test('step 2: a rejected seller stays undiscoverable', async () => {
   state.rejected = rejected;
 });
 
+test('step 2: seller KYC — uploads are tracked, submit needs required docs, reject reason, resubmit', async () => {
+  const s = await registerSellerAt(6, NEAR_POINT);
+  const upload = async (type) => {
+    const form = new FormData();
+    form.append('type', type);
+    form.append('document', new Blob([Buffer.from('%PDF-1.4 test')], { type: 'application/pdf' }), `${type}.pdf`);
+    const res = await fetch(`${base}/seller/kyc/document`, { method: 'POST', headers: { Authorization: `Bearer ${s.token}` }, body: form });
+    return { status: res.status, body: await res.json() };
+  };
+
+  const start = await api('GET', '/seller/kyc', { token: s.token });
+  assert.equal(start.body.kycStatus, 'pending');
+  assert.deepEqual(start.body.missingDocuments, ['aadhaar', 'pan', 'fssai']);
+  assert.equal(start.body.canSubmit, false);
+
+  const first = await upload('aadhaar');
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.deepEqual(first.body.documents.map(d => d.type), ['aadhaar']);
+  assert.ok(first.body.documents[0].uploadedAt);
+  assert.deepEqual(first.body.missingDocuments, ['pan', 'fssai']);
+
+  // The uploaded document is still reported on a fresh read (what every seller tab checks)
+  const reread = await api('GET', '/seller/kyc', { token: s.token });
+  assert.deepEqual(reread.body.documents.map(d => d.type), ['aadhaar']);
+
+  assert.equal((await upload('passport')).status, 400);
+  const early = await api('POST', '/seller/kyc/submit', { token: s.token });
+  assert.equal(early.status, 400);
+  assert.deepEqual(early.body.missingDocuments, ['pan', 'fssai']);
+
+  await upload('pan');
+  await upload('fssai');
+  const bank = await upload('bank'); // web alias for bankProof is kept, not dropped
+  assert.ok(bank.body.documents.some(d => d.type === 'bankProof'));
+  assert.equal(bank.body.canSubmit, true);
+
+  const submit = await api('POST', '/seller/kyc/submit', { token: s.token });
+  assert.equal(submit.status, 200);
+  assert.equal(submit.body.kycStatus, 'submitted');
+  assert.ok(submit.body.kycSubmittedAt);
+  assert.equal((await upload('gst')).status, 409, 'documents are locked while under review');
+
+  const reject = await api('POST', `/admin/sellers/${s.sellerId}/reject`, { token: state.adminToken, body: { reason: 'PAN is blurry' } });
+  assert.equal(reject.status, 200);
+  const afterReject = await api('GET', '/seller/kyc', { token: s.token });
+  assert.equal(afterReject.body.kycStatus, 'rejected');
+  assert.equal(afterReject.body.kycRejectReason, 'PAN is blurry');
+  assert.equal(afterReject.body.canSubmit, true);
+
+  assert.equal((await upload('pan')).status, 200);
+  const resubmit = await api('POST', '/seller/kyc/submit', { token: s.token });
+  assert.equal(resubmit.body.kycStatus, 'submitted');
+  assert.equal(resubmit.body.kycRejectReason, null);
+
+  const approve = await api('POST', `/admin/sellers/${s.sellerId}/approve`, { token: state.adminToken });
+  assert.equal(approve.status, 200);
+  assert.equal((await api('GET', '/seller/kyc', { token: s.token })).body.kycStatus, 'verified');
+  await Seller.deleteOne({ _id: s.sellerId });
+});
+
 // ── Step 3: menu management ────────────────────────────────────────────────
 test('step 3: approved seller creates menu items (validated, owned, persisted)', async () => {
   const bad = await api('POST', '/products', { token: state.seller.token, body: { name: 'Bad', category: 'Thali', sellingPrice: -5 } });
@@ -324,7 +384,7 @@ test('steps 5-6: website and app return the same eligible sellers and menus (21 
 
   assert.deepEqual(web, app, 'website and app see identical sellers, items and prices');
   assert.deepEqual(web.sellerIds, [state.seller.sellerId, state.inside.sellerId].sort());
-  assert.ok(!web.sellerIds.includes(state.outside.sellerId), '21.05 km seller excluded');
+  assert.ok(!web.sellerIds.includes(state.outside.sellerId), '12.05 km seller excluded');
   assert.ok(!web.sellerIds.includes(state.pending.sellerId), 'pending seller excluded');
   assert.ok(!web.sellerIds.includes(state.rejected.sellerId), 'rejected seller excluded');
 
@@ -339,7 +399,7 @@ test('steps 5-6: website and app return the same eligible sellers and menus (21 
   // Distance is reported from the server, not the client
   const nearby = await api('GET', `/user/sellers/nearby?${query({ lat: CUSTOMER_POINT[1], lng: CUSTOMER_POINT[0] })}`);
   const boundary = nearby.body.sellers.find(s => s._id === state.inside.sellerId);
-  assert.ok(boundary.distanceKm >= 20.9 && boundary.distanceKm <= 21, String(boundary.distanceKm));
+  assert.ok(boundary.distanceKm >= 11.9 && boundary.distanceKm <= 12, String(boundary.distanceKm));
 
   // Seller detail is the same record for both clients
   const detail = await api('GET', `/user/sellers/${state.seller.sellerId}`);
@@ -393,7 +453,7 @@ test('step 7: invalid orders are rejected by the backend and create nothing', as
     ['missing coordinates', { body: appOrderPayload({ deliveryAddress: deliveryAddress(null) }) }, 400],
     ['invalid coordinates', { body: appOrderPayload({ deliveryAddress: { ...deliveryAddress(), location: { type: 'Point', coordinates: [0, 0] } } }) }, 400],
     ['missing street', { body: appOrderPayload({ deliveryAddress: { ...deliveryAddress(), street: '' } }) }, 400],
-    ['seller outside 21 km', { body: { ...appOrderPayload(), sellerId: state.outside.sellerId, items: [{ menuItemId: (await Product.findOne({ sellerId: state.outside.sellerId }).lean())._id, quantity: 1 }], subtotal: 120 } }, 400],
+    ['seller outside 12 km', { body: { ...appOrderPayload(), sellerId: state.outside.sellerId, items: [{ menuItemId: (await Product.findOne({ sellerId: state.outside.sellerId }).lean())._id, quantity: 1 }], subtotal: 120 } }, 400],
     ['unapproved seller', { body: { ...appOrderPayload(), sellerId: state.pending.sellerId, subtotal: undefined } }, 409],
     ['unavailable item', { body: appOrderPayload({ items: [{ menuItemId: state.items.kheer, quantity: 1 }], subtotal: 60 }) }, 409],
     ['item of another seller', { body: appOrderPayload({ items: [{ menuItemId: state.items.thali, quantity: 1 }, { menuItemId: state.items.boundary, quantity: 1 }], subtotal: undefined }) }, 400],
@@ -481,7 +541,7 @@ test('step 7: a seller just inside the radius can be ordered from (web payload s
   assert.equal(order.paymentMethod, 'online');
   assert.equal(order.paymentStatus, 'pending', 'unverified UPI payment is not marked paid');
   assert.equal(order.paymentReference, 'UTR123456789');
-  assert.ok(order.deliveryDistanceKm > 20.9 && order.deliveryDistanceKm <= 21);
+  assert.ok(order.deliveryDistanceKm > 11.9 && order.deliveryDistanceKm <= 12);
   state.onlineOrderId = order._id.toString();
 });
 
@@ -595,4 +655,52 @@ test('steps 7-8 with GST on: quote, stored order and receipt agree to the paisa'
   assert.equal(receipt.summary.grandTotal, q.grandTotal);
   assert.equal(receipt.summary.taxTotal, q.taxTotal);
   assert.equal(receipt.integrity.componentsMatchTotal, true);
+});
+
+test('subscription purchase: price from the plan, wallet must cover it, online part must be a verified payment', async () => {
+  const SubscriptionPlan = require('../models/SubscriptionPlan');
+  const Subscription = require('../models/Subscription');
+  const plan = await SubscriptionPlan.create({ plan_name: 'Lunch Pass', total_amount: 3000, total_days: 30, per_day_value: 100, is_active: true });
+  const token = state.customer.token;
+  const buy = (body) => api('POST', '/subscriptions/purchase', { token, body: { planId: String(plan._id), sellerId: state.seller.sellerId, ...body } });
+
+  // Nothing paid → nothing activated, whatever the client claims
+  await User.updateOne({ _id: state.customer.userId }, { $set: { wallet: 0 } });
+  const free = await buy({ totalAmount: 1, totalDays: 30, razorpay_payment_id: 'UPI_123' });
+  assert.equal(free.status, 402, JSON.stringify(free.body));
+  const forged = await buy({ razorpay_order_id: 'order_x', razorpay_payment_id: 'pay_x', razorpay_signature: 'f'.repeat(64) });
+  assert.equal(forged.status, 400);
+  const spoofWallet = await buy({ usedWallet: true, walletAmount: 3000 });
+  assert.equal(spoofWallet.status, 402, 'wallet amount is capped at the real balance');
+  assert.equal(await Subscription.countDocuments({ user_id: state.customer.userId }), 0);
+
+  // Paid fully from a real wallet balance → active, charged the plan price, wallet debited once
+  await User.updateOne({ _id: state.customer.userId }, { $set: { wallet: 3500 } });
+  const ok = await buy({ usedWallet: true, walletAmount: 3000, totalAmount: 10 });
+  assert.equal(ok.status, 201, JSON.stringify(ok.body));
+  const sub = await Subscription.findById(ok.body.subscription._id).lean();
+  assert.equal(sub.total_amount, 3000);
+  assert.equal(sub.total_days, 30);
+  assert.equal(sub.paid_from_wallet, 3000);
+  assert.equal(sub.status, 'active');
+  assert.equal((await User.findById(state.customer.userId).lean()).wallet, 500);
+
+  const inactive = await SubscriptionPlan.create({ plan_name: 'Old Pass', total_amount: 100, total_days: 5, per_day_value: 20, is_active: false });
+  const gone = await api('POST', '/subscriptions/purchase', { token, body: { planId: String(inactive._id), sellerId: state.seller.sellerId, usedWallet: true, walletAmount: 100 } });
+  assert.equal(gone.status, 400);
+});
+
+test('admin GST report lists this period\'s orders with their tax and a seller-wise total', async () => {
+  const forbidden = await api('GET', '/admin/gst/reports?period=monthly', { token: state.customer.token });
+  assert.ok([401, 403].includes(forbidden.status));
+  const r = await api('GET', '/admin/gst/reports?period=monthly', { token: state.adminToken });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.ok(r.body.orders.length > 0);
+  const row = r.body.orders.find(o => o._id === state.orderId);
+  assert.ok(row, 'order placed this month is in the report');
+  const stored = await Order.findById(state.orderId).lean();
+  assert.equal(Math.round((row.cgstTotal + row.sgstTotal) * 100), Math.round(((stored.cgst || 0) + (stored.sgst || 0) + (stored.igst || 0)) * 100));
+  const seller = r.body.sellerWise.find(s => String(s._id) === state.seller.sellerId);
+  assert.ok(seller && seller.totalOrders >= 1);
+  assert.equal((await api('GET', '/admin/gst/reports?period=nonsense', { token: state.adminToken })).body.period, 'monthly');
 });

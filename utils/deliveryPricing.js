@@ -70,7 +70,7 @@ function getCustomerDeliveryFee(distanceKm, slabs, maxKm, maxCap) {
   const effectiveMax = (typeof maxKm === 'number' && maxKm > 0) ? maxKm : DEFAULT_MAX_KM;
   const effectiveCap = (typeof maxCap === 'number' && maxCap > 0) ? maxCap : DEFAULT_MAX_CAP;
 
-  if (km > effectiveMax) return null; // Not serviceable
+  if (km > effectiveMax + 0.0001) return null; // Not serviceable
 
   let fee = effectiveSlabs[effectiveSlabs.length - 1].customerFee;
   for (const slab of effectiveSlabs) {

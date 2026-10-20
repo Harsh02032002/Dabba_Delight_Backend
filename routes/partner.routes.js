@@ -34,6 +34,10 @@ router.post('/accept', dc.acceptOrder);
 router.put('/order/accept', dc.acceptOrder);
 router.post('/order/accept', dc.acceptOrder);
 router.post('/orders/:orderId/accept', dc.acceptOrder);
+router.post('/order/:orderId/accept', dc.acceptOrder);
+router.put('/order/:orderId/accept', dc.acceptOrder);
+router.put('/orders/:orderId/status', dc.updateDeliveryStatus);
+router.put('/order/:orderId/status', dc.updateDeliveryStatus);
 
 router.put('/status-update', dc.updateDeliveryStatus);
 router.patch('/status-update', dc.updateDeliveryStatus);

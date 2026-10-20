@@ -184,6 +184,19 @@ async function findUserByIdentifierAndRole(rawId, role, selectPassword = false) 
   const matchingUsers = await (selectPassword ? User.find(query).select('+password') : User.find(query));
   if (role && matchingUsers.length > 0) {
     const matched = matchingUsers.find(u => u.role === role);
+    if (!matched && role === 'seller') {
+      const Seller = require('../models/Seller');
+      for (const u of matchingUsers) {
+        const seller = await Seller.findOne({ userId: u._id });
+        if (seller) {
+          if (u.role !== 'seller') {
+            u.role = 'seller';
+            await u.save().catch(() => {});
+          }
+          return u;
+        }
+      }
+    }
     if (matched) return matched;
   }
   return matchingUsers.length > 0 ? matchingUsers[0] : null;
@@ -479,9 +492,21 @@ exports.changePassword = async (req, res) => {
 exports.getProfile = async (req, res) => {
   try {
     const user = req.user;
+    let role = user.role;
+    if (role !== 'admin' && role !== 'delivery') {
+      const Seller = require('../models/Seller');
+      const seller = await Seller.findOne({ userId: user._id });
+      if (seller) {
+        role = 'seller';
+        if (user.role !== 'seller') {
+          user.role = 'seller';
+          await user.save().catch(() => {});
+        }
+      }
+    }
     res.json({
       success: true,
-      _id: user._id, name: user.name, email: user.email, role: user.role,
+      _id: user._id, name: user.name, email: user.email, role: role,
       phone: user.phone, avatar: user.avatar, banner: user.banner, wallet: user.wallet,
       bio: user.bio || '', address: user.address || '',
       referralCode: user.referralCode, isVerified: user.isVerified,
@@ -500,7 +525,7 @@ exports.updateProfile = async (req, res) => {
 
     const user = await User.findByIdAndUpdate(req.user._id, updates, { new: true });
     res.json({ success: true, user: {
-      _id: user._id, name: user.name, email: user.email, role: user.role,
+      _id: user._id, name: user.name, email: user.email, role: role,
       phone: user.phone, avatar: user.avatar, banner: user.banner,
       bio: user.bio || '', address: user.address || '',
       wallet: user.wallet, referralCode: user.referralCode, isVerified: user.isVerified,

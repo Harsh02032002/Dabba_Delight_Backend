@@ -1,4 +1,5 @@
 const { DeliveryPartner, WalletTransaction, Notification } = require('../models/Others');
+const { settleDeliveredOrder } = require('../services/order-settlement.service');
 const Order = require('../models/Order');
 const User = require('../models/User');
 const Seller = require('../models/Seller');
@@ -74,6 +75,8 @@ async function completeDelivery({ orderId, partner, io, updatedBy }) {
   }
 
   await creditRiderDeliveryFee(partner, delivered);
+  // Seller/admin split, invoice and cashback — the same settlement as seller self-delivery
+  await settleDeliveredOrder(delivered._id).catch((e) => console.error('settleDeliveredOrder error:', e.message));
 
   emitOrderUpdate(io, delivered, { message: 'Your order has been delivered successfully!' });
   try {
@@ -761,7 +764,7 @@ exports.getEarnings = async (req, res) => {
       weekEarnings: week,
       totalDeliveries: deliveredOrders.length || partner.totalDeliveries || 0,
       todayDeliveries: todayDeliveries || partner.todayDeliveries || 0,
-      wallet: partner.wallet || total,
+      wallet: Number(partner.wallet) || 0,
       summary: {
         today,
         week,
@@ -993,24 +996,37 @@ exports.getWalletTransactions = async (req, res) => {
 
 exports.withdrawFromWallet = async (req, res) => {
   try {
-    const { amount } = req.body;
-    const partner = await DeliveryPartner.findOne({ userId: req.user._id });
-    if (partner.wallet < amount) {
-      return res.status(400).json({ success: false, message: 'Insufficient balance' });
+    const amount = Math.round(Number(req.body?.amount) * 100) / 100;
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ success: false, message: 'Enter a valid amount' });
     }
-    const updatedPartner = await DeliveryPartner.findByIdAndUpdate(
-      partner._id, 
-      { $inc: { wallet: -amount } }, 
-      { new: true }
+    const partner = await getPartnerForUser(req.user);
+    if (!partner) return res.status(404).json({ success: false, message: 'Delivery partner profile not found' });
+
+    // Deduct only if the balance covers it, in one step, so two requests cannot overdraw
+    const updatedPartner = await DeliveryPartner.findOneAndUpdate(
+      { _id: partner._id, wallet: { $gte: amount } },
+      { $inc: { wallet: -amount } },
+      { new: true },
     );
-    await WalletTransaction.create({
-      deliveryPartnerId: partner._id,
-      type: 'debit',
-      amount,
-      description: 'Wallet withdrawal',
-      referenceType: 'withdrawal',
-      balance: updatedPartner.wallet,
-    });
+    if (!updatedPartner) {
+      return res.status(400).json({ success: false, message: `Insufficient balance. Available: ₹${Number(partner.wallet || 0).toFixed(2)}` });
+    }
+    try {
+      await WalletTransaction.create({
+        userId: partner.userId,
+        deliveryPartnerId: partner._id,
+        type: 'debit',
+        amount,
+        description: 'Wallet withdrawal',
+        referenceType: 'withdrawal',
+        balance: updatedPartner.wallet,
+      });
+    } catch (recordErr) {
+      // Never take money without a record of it
+      await DeliveryPartner.updateOne({ _id: partner._id }, { $inc: { wallet: amount } });
+      throw recordErr;
+    }
     res.json({ success: true, wallet: updatedPartner.wallet });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
@@ -1086,6 +1102,31 @@ exports.rejectOrder = async (req, res) => {
   }
 };
 
+/** Wrong delivery OTP entries allowed per order before support has to step in */
+const MAX_DELIVERY_OTP_ATTEMPTS = 5;
+
+/**
+ * The customer's OTP is the only proof of handover; there is no fallback code.
+ * Returns null when the delivery may be completed, else { status, message }.
+ */
+const checkDeliveryOtp = async (order, otp) => {
+  if (order.status === 'delivered') return null; // retries stay idempotent
+  if (!order.deliveryOtp) {
+    order.deliveryOtp = Math.floor(1000 + Math.random() * 9000).toString();
+    await order.save();
+    return { status: 400, message: 'Ask the customer for the delivery OTP shown in their app' };
+  }
+  if ((order.deliveryOtpAttempts || 0) >= MAX_DELIVERY_OTP_ATTEMPTS) {
+    return { status: 429, message: 'Too many wrong OTP attempts. Please contact support to complete this delivery.' };
+  }
+  if (!otp || String(otp).trim() !== String(order.deliveryOtp)) {
+    await Order.updateOne({ _id: order._id }, { $inc: { deliveryOtpAttempts: 1 } });
+    const left = MAX_DELIVERY_OTP_ATTEMPTS - (order.deliveryOtpAttempts || 0) - 1;
+    return { status: 400, message: left > 0 ? `Invalid OTP. ${left} attempt${left === 1 ? '' : 's'} left.` : 'Invalid OTP. No attempts left, please contact support.' };
+  }
+  return null;
+};
+
 // PATCH /api/delivery/orders/:orderId/status  |  PUT /api/order/status-update { orderId, status }
 exports.updateDeliveryStatus = async (req, res) => {
   try {
@@ -1107,6 +1148,8 @@ exports.updateDeliveryStatus = async (req, res) => {
 
     // Delivery completion goes through the same exactly-once path as OTP confirmation
     if (status === 'delivered') {
+      const otpError = await checkDeliveryOtp(order, req.body?.otp);
+      if (otpError) return res.status(otpError.status).json({ success: false, message: otpError.message });
       const result = await completeDelivery({ orderId, partner, io, updatedBy: req.user._id });
       if (!result.ok) return res.status(result.code || 400).json({ success: false, message: result.message });
       return res.json({ success: true, message: 'Delivery status updated successfully', order: result.order });
@@ -1196,11 +1239,8 @@ exports.confirmDeliveryOTP = async (req, res) => {
       return res.status(403).json({ success: false, message: 'This order is not assigned to you' });
     }
 
-    // Verify OTP: Check if OTP matches '1234' (default fallback) or order.deliveryOtp
-    const validOtp = order.deliveryOtp || '1234';
-    if (otp !== validOtp && otp !== '1234') {
-      return res.status(400).json({ success: false, message: 'Invalid OTP' });
-    }
+    const otpError = await checkDeliveryOtp(order, otp);
+    if (otpError) return res.status(otpError.status).json({ success: false, message: otpError.message });
 
     const result = await completeDelivery({ orderId, partner, io: req.app.get('io'), updatedBy: req.user._id });
     if (!result.ok) return res.status(result.code || 400).json({ success: false, message: result.message });

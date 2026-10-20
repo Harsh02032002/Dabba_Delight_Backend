@@ -86,92 +86,102 @@ exports.getAvailablePlans = async (req, res) => {
 
 exports.purchase = async (req, res) => {
   try {
-    console.log('🔍 Subscription purchase request received');
-    console.log('📦 req.body:', req.body);
-    console.log('👤 req.user:', req.user ? req.user._id : 'undefined');
-    
-    const { planId, sellerId, totalAmount, totalDays } = req.body;
-    console.log('📋 Extracted fields:', { planId, sellerId, totalAmount, totalDays });
-    
-    let purchaseData = { totalAmount: Number(totalAmount), totalDays: Number(totalDays) };
-    
-    // If planId provided, get plan details
-    if (planId) {
-      const plan = await SubscriptionPlan.findById(planId);
-      if (!plan || !plan.is_active) {
-        return res.status(400).json({ success: false, message: 'Invalid or inactive plan' });
+    const { planId, sellerId, usedWallet } = req.body;
+
+    // Price and duration always come from the stored plan, never from the client
+    if (!planId || !mongoose.Types.ObjectId.isValid(String(planId))) {
+      return res.status(400).json({ success: false, message: 'Please choose a plan' });
+    }
+    const plan = await SubscriptionPlan.findById(planId);
+    if (!plan || !plan.is_active) {
+      return res.status(400).json({ success: false, message: 'This plan is no longer available' });
+    }
+    if (!sellerId || !mongoose.Types.ObjectId.isValid(String(sellerId))) {
+      return res.status(400).json({ success: false, message: 'Please choose a kitchen for this plan' });
+    }
+    const Seller = require('../models/Seller');
+    const { isSellerEligible } = require('../utils/sellerGeo');
+    const seller = await Seller.findById(sellerId);
+    if (!isSellerEligible(seller)) {
+      return res.status(409).json({ success: false, message: 'This kitchen is not accepting subscriptions right now' });
+    }
+
+    const totalAmount = Number(plan.total_amount);
+    const purchaseData = { totalAmount, totalDays: Number(plan.total_days), planId: plan._id, sellerId: seller._id, seller_name: seller.businessName, seller_type: seller.type };
+
+    const user = await User.findById(req.user._id);
+    const walletAmount = usedWallet
+      ? Math.max(0, Math.min(Number(req.body.walletAmount) || 0, totalAmount, Number(user?.wallet) || 0))
+      : 0;
+    const payableOnline = Math.round((totalAmount - walletAmount) * 100) / 100;
+
+    // Anything not covered by the wallet must be a Razorpay payment we can verify for that exact amount
+    let paymentId = null;
+    if (payableOnline > 0) {
+      const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+      if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+        return res.status(402).json({ success: false, message: `Payment of ₹${payableOnline} is required to activate this plan` });
       }
-      
-      purchaseData = {
-        totalAmount: plan.total_amount,
-        totalDays: plan.total_days,
-        planId: plan._id
-      };
+      if (await Subscription.exists({ payment_id: razorpay_payment_id })) {
+        return res.status(409).json({ success: false, message: 'This payment has already been used' });
+      }
+      const { confirmRazorpayPayment } = require('./payment.controller');
+      const check = await confirmRazorpayPayment({
+        razorpayOrderId: razorpay_order_id, razorpayPaymentId: razorpay_payment_id, razorpaySignature: razorpay_signature,
+        amountPaise: Math.round(payableOnline * 100),
+      });
+      if (!check.ok) return res.status(check.status).json({ success: false, message: check.message });
+      paymentId = razorpay_payment_id;
     }
-    
-    // Use user-selected seller (from frontend)
-    if (sellerId) {
-      purchaseData.sellerId = sellerId;
-      console.log('✅ Using user-selected seller:', sellerId);
-    } else {
-      return res.status(400).json({ success: false, message: 'Seller selection required' });
-    }
-    
-    // HYBRID PAYMENT: Handle wallet deduction if used
-    const { usedWallet, walletAmount } = req.body;
+
     const session = await mongoose.startSession();
     let subscription;
-    
+
     try {
       session.startTransaction();
-      
-      if (usedWallet && walletAmount > 0) {
-        const user = await User.findById(req.user._id).session(session);
-        if (!user || user.wallet < walletAmount) {
+
+      if (walletAmount > 0) {
+        // Conditional debit so two purchases cannot spend the same balance
+        const debited = await User.findOneAndUpdate(
+          { _id: req.user._id, wallet: { $gte: walletAmount } },
+          { $inc: { wallet: -walletAmount } },
+          { new: true, session },
+        );
+        if (!debited) {
           await session.abortTransaction();
-          session.endSession();
           return res.status(400).json({ success: false, message: 'Insufficient wallet balance' });
         }
-        
-        user.wallet -= Number(walletAmount);
-        await user.save({ session });
-        
-        const { WalletTransaction } = require('../models/Others');
         await WalletTransaction.create([{
           userId: req.user._id,
           type: 'debit',
-          amount: Number(walletAmount),
-          description: `Subscription purchase: ${purchaseData.planId || 'Plan'}`,
+          amount: walletAmount,
+          description: `Subscription purchase: ${plan.plan_name}`,
           referenceType: 'subscription',
-          balance: user.wallet
+          balance: debited.wallet,
         }], { session });
-        
-        console.log(`💰 Deducted ₹${walletAmount} from user wallet. New balance: ₹${user.wallet}`);
       }
 
-      console.log('🚀 Calling createSubscriptionPurchase with:', purchaseData);
       subscription = await subscriptionService.createSubscriptionPurchase(req.user._id, purchaseData, session);
-      
+      await Subscription.updateOne(
+        { _id: subscription._id },
+        { $set: { paid_from_wallet: walletAmount, paid_online: payableOnline, ...(paymentId ? { payment_id: paymentId } : {}) } },
+        { session },
+      );
+
       await session.commitTransaction();
-      console.log('✅ Subscription transaction committed');
     } catch (error) {
       if (session.inTransaction()) await session.abortTransaction();
-      console.error('❌ Subscription purchase transaction failed:', error);
-      session.endSession();
-      return res.status(500).json({ success: false, message: 'Failed to process subscription purchase: ' + error.message });
+      console.error('Subscription purchase transaction failed:', error.message);
+      return res.status(error.status || 500).json({ success: false, message: error.status ? error.message : 'Failed to process subscription purchase. You have not been charged from your wallet.' });
     } finally {
       session.endSession();
     }
-    
+
     // NEW WALLET SYSTEM: Process subscription payment (distribute to admin/seller)
     try {
       console.log('💰 Processing subscription payment through wallet system');
       
-      let planName = 'Subscription';
-      if (planId) {
-        const plan = await SubscriptionPlan.findById(planId);
-        if (plan) planName = plan.plan_name;
-      }
+      const planName = plan.plan_name || 'Subscription';
       
       await walletController.processSubscriptionPayment({
         subscriptionId: subscription._id,
