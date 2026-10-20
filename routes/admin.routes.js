@@ -22,6 +22,7 @@ router.get('/analytics/cart-dropoffs', adminAuth, ac.getCartDropoffs);
 
 // Sellers
 router.get('/sellers', adminAuth, ac.getSellers);
+router.get('/sellers/:id', adminAuth, ac.getSellerById);
 router.post('/sellers', adminAuth, ac.createSeller);
 router.delete('/sellers/:id', adminAuth, ac.deleteSeller);
 router.post('/sellers/:id/approve', adminAuth, ac.approveSeller);
@@ -36,7 +37,6 @@ router.post('/users/:id/unblock', adminAuth, ac.unblockUser);
 // Orders
 router.get('/orders', adminAuth, oc.getAdminOrders);
 router.patch('/orders/:id/payment', adminAuth, ac.setOrderPaymentStatus);
-// router.post('/orders/:id/refund', adminAuth, oc.refundOrder); // Function not implemented yet
 
 // Disputes
 router.get('/disputes', adminAuth, ac.getDisputes);
@@ -100,5 +100,8 @@ router.get('/partners', adminAuth, ac.getDeliveryPartners);
 router.get('/partners/:id', adminAuth, ac.getDeliveryPartnerById);
 router.post('/partners/:id/approve', adminAuth, ac.approveDeliveryPartner);
 router.post('/partners/:id/reject', adminAuth, ac.rejectDeliveryPartner);
+
+// Reviews
+router.get('/reviews', adminAuth, ac.getReviews);
 
 module.exports = router;
