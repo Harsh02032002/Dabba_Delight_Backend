@@ -17,8 +17,7 @@ process.on('unhandledRejection', (reason) => {
     console.warn(`⚠️ Ignored temp-file lock error (${reason.code}): ${reason.path || reason.message}`);
     return;
   }
-  // Preserve Node's default behaviour for real bugs
-  throw reason;
+  console.error('⚠️ Unhandled Promise Rejection (non-fatal):', reason);
 });
 
 const envPath = path.join(__dirname, '.env');
@@ -532,6 +531,10 @@ app.options("*", cors({
 const publicCtrl = require('./controllers/public.controller');
 app.get('/api/public/gst-settings', publicCtrl.getPublicGSTSettings);
 app.get('/api/public/platform-config', publicCtrl.getPublicPlatformConfig);
+app.get('/api/user/gst-settings', publicCtrl.getPublicGSTSettings);
+app.get('/api/user/platform-settings', publicCtrl.getPublicPlatformConfig);
+app.get('/api/sellers/nearby', require('./controllers/location.controller').getNearbySellers);
+app.get('/api/sellers', require('./controllers/user.controller').getSellers);
 
 // Request logging for performance monitoring
 app.use((req, res, next) => {
@@ -588,8 +591,11 @@ connectDB();
 
 // ─── Routes ─────────────────────────────────────────
 app.use('/api/auth', require('./routes/auth.routes'));
+app.use('/auth', require('./routes/auth.routes'));
+app.use('/partner', require('./routes/partner.routes'));
 app.use('/api/user', require('./routes/user.routes'));
 app.use('/api/user/orders', require('./routes/order.routes'));
+app.use('/api/orders', require('./routes/order.routes'));
 app.use('/api/user/wishlist', require('./routes/wishlist.routes'));
 app.use('/api/user/notifications', require('./routes/notification.routes'));
 app.use('/api/search', require('./routes/search.routes'));
