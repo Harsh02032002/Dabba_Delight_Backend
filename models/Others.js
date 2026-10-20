@@ -949,7 +949,7 @@ const walletTransactionSchema = new mongoose.Schema(
     referenceId: String,
     referenceType: {
       type: String,
-      enum: ["order", "refund", "referral", "topup", "settlement", "delivery_payout", "withdrawal"],
+      enum: ["order", "refund", "referral", "topup", "settlement", "delivery_payout", "withdrawal", "subscription"],
     },
     balance: Number,
   },
