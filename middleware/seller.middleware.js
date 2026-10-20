@@ -12,12 +12,12 @@ const sellerAuth = async (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const user = await User.findById(decoded.id);
-    if (!user || user.role !== 'seller') return res.status(403).json({ message: 'Not a seller' });
+    if (!user) return res.status(401).json({ message: 'User not found' });
 
     let seller = await Seller.findOne({ userId: user._id });
 
-    // Auto-create seller profile if missing (for upgraded accounts)
-    if (!seller) {
+    // Auto-create a (pending, unverified) seller profile if a seller account has none
+    if (!seller && user.role === 'seller') {
       try {
         seller = await Seller.create({
           userId: user._id,
@@ -31,6 +31,9 @@ const sellerAuth = async (req, res, next) => {
       }
     }
 
+    if (!seller) {
+      return res.status(403).json({ message: 'Not a seller' });
+    }
     req.user = user;
     req.seller = seller;
     req.user.sellerId = seller._id;
