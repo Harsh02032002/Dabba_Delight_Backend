@@ -62,7 +62,7 @@ const PIN_MISMATCH_KM = 80;
 // and riders only receive orders whose customer is within this distance of them.
 // The boundary is INCLUSIVE: a seller exactly SERVICE_RADIUS_KM away is eligible.
 // Override with SERVICE_RADIUS_KM in .env if ever needed.
-const DEFAULT_SERVICE_RADIUS_KM = 21;
+const DEFAULT_SERVICE_RADIUS_KM = 12;
 const SERVICE_RADIUS_KM = Number(process.env.SERVICE_RADIUS_KM) > 0 ? Number(process.env.SERVICE_RADIUS_KM) : DEFAULT_SERVICE_RADIUS_KM;
 
 // ─── SELLER ELIGIBILITY (single source of truth) ───────────────────────
@@ -74,7 +74,7 @@ const isSellerEligible = (seller) => !!seller && seller.isActive === true && sel
 
 /** Inclusive boundary rule: exactly SERVICE_RADIUS_KM away is still served */
 const isWithinServiceRadius = (distanceKm, radiusKm = SERVICE_RADIUS_KM) =>
-  Number.isFinite(distanceKm) && distanceKm >= 0 && distanceKm <= radiusKm;
+  Number.isFinite(distanceKm) && distanceKm >= 0 && distanceKm <= (radiusKm + 0.0001);
 
 /** Requested radius (metres, from client) -> km, never more than SERVICE_RADIUS_KM */
 const clampRadiusKm = (radiusMeters) => {
