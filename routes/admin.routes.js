@@ -71,6 +71,7 @@ router.put('/gst/settings', adminAuth, gstController.updateGSTSettings);
 router.post('/gst/settings', adminAuth, gstController.updateGSTSettings);
 router.post('/gst/reset', adminAuth, gstController.resetGSTSettings);
 router.get('/gst/summary', adminAuth, gstController.getGSTSummary);
+router.get('/gst/reports', adminAuth, ac.getGSTReports);
 
 const subController = require('../controllers/subscription.controller');
 router.get('/subscriptions', adminAuth, subController.adminListSubscriptions);
