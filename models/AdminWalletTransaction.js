@@ -22,7 +22,7 @@ const adminWalletTransactionSchema = new mongoose.Schema({
   
   // Transaction Details
   description: { type: String, required: true },
-  payment_method: { type: String, enum: ['razorpay', 'subscription', 'wallet', 'bank_transfer', 'upi'] },
+  payment_method: { type: String, enum: ['razorpay', 'subscription', 'wallet', 'bank_transfer', 'upi', 'cod', 'online', 'online_qr', 'stripe'] },
   
   // Razorpay Details
   razorpay_order_id: { type: String },
