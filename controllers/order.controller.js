@@ -243,6 +243,7 @@ exports.placeOrder = async (req, res) => {
 
       order = new Order({
         userId: req.user._id,
+        deliveryOtp: Math.floor(1000 + Math.random() * 9000).toString(),
         sellerId,
         items,
         deliveryAddress: sanitizedAddress,
