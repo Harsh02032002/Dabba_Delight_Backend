@@ -83,6 +83,8 @@ const orderSchema = new mongoose.Schema({
   pickedUpAt: Date,
   /** Set once when the rider payout is credited — guards against double crediting */
   riderPayoutCreditedAt: Date,
+  /** Set once the delivered order's seller/admin split and cashback have been applied */
+  sellerSettledAt: Date,
   deliveryOtp: { type: String, default: () => Math.floor(1000 + Math.random() * 9000).toString() },
   deliveryOtpAttempts: { type: Number, default: 0 },
   deliveryLocation: { lat: Number, lng: Number },
