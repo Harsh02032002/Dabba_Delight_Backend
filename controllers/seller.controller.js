@@ -228,88 +228,100 @@ exports.getSettlements = async (req, res) => {
 };
 
 // ─── KYC ────────────────────────────────────────
-exports.getKYCStatus = async (req, res) => {
-  try {
-    const docsObj = req.seller.kycDocuments || {};
-    const documents = Object.entries(docsObj).map(([type, info]) => ({
-      type,
-      ...(info || {}),
-    }));
-    res.json({
-      success: true,
-      kycStatus: req.seller.kycStatus,
-      documents,
-      bankDetails: req.seller.bankDetails,
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
+// Document types the seller panel can upload; the first three are needed before review
+const KYC_DOC_TYPES = ['aadhaar', 'pan', 'fssai', 'gst', 'bankProof'];
+const KYC_REQUIRED_DOCS = ['aadhaar', 'pan', 'fssai'];
+const KYC_TYPE_ALIASES = { bank: 'bankProof', bank_proof: 'bankProof', bankStatement: 'bankProof' };
+const normalizeKycType = (type) => {
+  const t = KYC_TYPE_ALIASES[String(type || '').trim()] || String(type || '').trim();
+  return KYC_DOC_TYPES.includes(t) ? t : null;
+};
+
+/** One response shape for every KYC endpoint, so the panel always knows what is left to do */
+const kycPayload = (seller) => {
+  const raw = seller.kycDocuments?.toObject ? seller.kycDocuments.toObject() : (seller.kycDocuments || {});
+  const documents = KYC_DOC_TYPES
+    .filter((type) => raw[type]?.url)
+    .map((type) => ({ type, url: raw[type].url, status: raw[type].status || 'uploaded', uploadedAt: raw[type].uploadedAt || null }));
+  const uploaded = new Set(documents.map((d) => d.type));
+  const missing = KYC_REQUIRED_DOCS.filter((t) => !uploaded.has(t));
+  const kycStatus = seller.kycStatus || 'pending';
+  return {
+    success: true,
+    kycStatus,
+    documents,
+    requiredDocuments: KYC_REQUIRED_DOCS,
+    optionalDocuments: KYC_DOC_TYPES.filter((t) => !KYC_REQUIRED_DOCS.includes(t)),
+    missingDocuments: missing,
+    canSubmit: (kycStatus === 'pending' || kycStatus === 'rejected') && missing.length === 0,
+    kycSubmittedAt: seller.kycSubmittedAt || null,
+    kycRejectReason: kycStatus === 'rejected' ? (seller.kycRejectReason || null) : null,
+    bankDetails: seller.bankDetails,
+  };
+};
+
+const canEditKyc = (seller) => ['pending', 'rejected'].includes(seller.kycStatus || 'pending');
+
+const saveKycDocument = async (req, res, rawType) => {
+  const type = normalizeKycType(rawType);
+  if (!type) return res.status(400).json({ success: false, message: 'Unknown document type' });
+  const fileUrl = req.file?.s3Url || null;
+  if (!fileUrl) return res.status(400).json({ success: false, message: 'Please choose a file to upload' });
+  if (!canEditKyc(req.seller)) {
+    return res.status(409).json({ success: false, message: req.seller.kycStatus === 'verified' ? 'Your KYC is already verified' : 'Your documents are under review and can no longer be changed' });
   }
+  req.seller.set(`kycDocuments.${type}`, { url: fileUrl, status: 'uploaded', uploadedAt: new Date() });
+  await req.seller.save();
+  res.json(kycPayload(req.seller));
+};
+
+exports.getKYCStatus = async (req, res) => {
+  try { res.json(kycPayload(req.seller)); }
+  catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
 exports.uploadKYCDocument = async (req, res) => {
-  try {
-    const { type } = req.body;
-    const fileUrl = req.file?.s3Url || null;
-    if (!type || !fileUrl) return res.status(400).json({ message: 'type and file required' });
-    if (!req.seller.kycDocuments) req.seller.kycDocuments = {};
-    req.seller.kycDocuments[type] = {
-      url: fileUrl,
-      status: 'uploaded',
-      uploadedAt: new Date(),
-    };
-    req.seller.markModified('kycDocuments');
-    await req.seller.save();
-    const docsObj = req.seller.kycDocuments || {};
-    const documents = Object.entries(docsObj).map(([t, info]) => ({
-      type: t,
-      ...(info || {}),
-    }));
-    res.json({ success: true, documents });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+  try { await saveKycDocument(req, res, req.body?.type); }
+  catch (err) { res.status(500).json({ success: false, message: err.message }); }
+};
+
+exports.updateKYCDocument = async (req, res) => {
+  try { await saveKycDocument(req, res, req.params.type); }
+  catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
 exports.submitKYC = async (req, res) => {
-  try { req.seller.kycStatus = 'submitted'; await req.seller.save(); res.json({ success: true, kycStatus: 'submitted' }); }
-  catch (err) { res.status(500).json({ success: false, message: err.message }); }
+  try {
+    const current = kycPayload(req.seller);
+    if (current.kycStatus === 'submitted') return res.json(current);
+    if (current.kycStatus === 'verified') return res.status(409).json({ success: false, message: 'Your KYC is already verified' });
+    if (current.missingDocuments.length) {
+      return res.status(400).json({ success: false, message: 'Please upload all required documents before submitting', missingDocuments: current.missingDocuments });
+    }
+    req.seller.kycStatus = 'submitted';
+    req.seller.kycSubmittedAt = new Date();
+    req.seller.kycRejectReason = undefined;
+    await req.seller.save();
+    // Let admins know there is something to review
+    const admins = await User.find({ role: 'admin' }).select('_id').lean();
+    if (admins.length) {
+      await Notification.insertMany(admins.map((a) => ({
+        userId: a._id, type: 'kyc', title: 'Seller KYC submitted',
+        message: `${req.seller.businessName} submitted KYC documents for review.`,
+      }))).catch(() => {});
+    }
+    res.json(kycPayload(req.seller));
+  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
 exports.deleteKYCDocument = async (req, res) => {
   try {
-    const { type } = req.params;
-    if (!req.seller.kycDocuments) req.seller.kycDocuments = {};
-    if (req.seller.kycDocuments[type]) {
-      delete req.seller.kycDocuments[type];
-      req.seller.markModified('kycDocuments');
-      await req.seller.save();
-    }
-    const docsObj = req.seller.kycDocuments || {};
-    const documents = Object.entries(docsObj).map(([t, info]) => ({
-      type: t,
-      ...(info || {}),
-    }));
-    res.json({ success: true, documents });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
-};
-
-exports.updateKYCDocument = async (req, res) => {
-  try {
-    const { type } = req.params;
-    const fileUrl = req.file?.s3Url || null;
-    if (!type || !fileUrl) return res.status(400).json({ message: 'type and file required' });
-    if (!req.seller.kycDocuments) req.seller.kycDocuments = {};
-    req.seller.kycDocuments[type] = {
-      url: fileUrl,
-      status: 'uploaded',
-      uploadedAt: new Date(),
-    };
-    req.seller.markModified('kycDocuments');
+    const type = normalizeKycType(req.params.type);
+    if (!type) return res.status(400).json({ success: false, message: 'Unknown document type' });
+    if (!canEditKyc(req.seller)) return res.status(409).json({ success: false, message: 'Your documents are under review and can no longer be changed' });
+    req.seller.set(`kycDocuments.${type}`, undefined);
     await req.seller.save();
-    const docsObj = req.seller.kycDocuments || {};
-    const documents = Object.entries(docsObj).map(([t, info]) => ({
-      type: t,
-      ...(info || {}),
-    }));
-    res.json({ success: true, documents });
+    res.json(kycPayload(req.seller));
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
