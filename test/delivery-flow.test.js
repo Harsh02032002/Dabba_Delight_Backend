@@ -186,9 +186,12 @@ test('pickup → out for delivery → OTP delivery credits the rider exactly onc
   const orderId = order._id.toString();
   await call(deliveryController.acceptOrder, { params: { orderId }, user: a.user, io });
 
+  const realOtp = (await Order.findById(orderId).lean()).deliveryOtp;
+  assert.match(realOtp, /^\d{4}$/);
+
   // Delivery cannot be confirmed before pickup
-  const early = await call(deliveryController.confirmDeliveryOTP, { body: { orderId, otp: '1234' }, user: a.user, io });
-  assert.equal(early.status, 409);
+  const early = await call(deliveryController.confirmDeliveryOTP, { body: { orderId, otp: realOtp }, user: a.user, io });
+  assert.equal(early.status, 409, JSON.stringify(early.body));
 
   // Another rider cannot drive this order
   const other = await mkRider(NEAR_RIDER, 'Other');
@@ -204,10 +207,19 @@ test('pickup → out for delivery → OTP delivery credits the rider exactly onc
   assert.equal(picked.body.order.status, 'out_for_delivery');
   assert.equal((await notificationsFor(customer._id, 'Out for Delivery')).length, 1);
 
+  // Only the customer's OTP completes the delivery; there is no universal fallback code
+  for (const guess of ['1234', '0000'].filter(g => g !== realOtp)) {
+    const wrong = await call(deliveryController.confirmDeliveryOTP, { body: { orderId, otp: guess }, user: a.user, io });
+    assert.equal(wrong.status, 400, `OTP ${guess} must be rejected`);
+  }
+  const skip = await call(deliveryController.updateDeliveryStatus, { body: { orderId, status: 'delivered' }, user: a.user, io });
+  assert.equal(skip.status, 400, 'status update cannot complete a delivery without the OTP');
+  assert.equal((await Order.findById(orderId).lean()).status, 'out_for_delivery');
+
   // Double tap / retry: both succeed, money moves once
   const [d1, d2] = await Promise.all([
-    call(deliveryController.confirmDeliveryOTP, { body: { orderId, otp: '1234' }, user: a.user, io }),
-    call(deliveryController.confirmDeliveryOTP, { body: { orderId, otp: '1234' }, user: a.user, io }),
+    call(deliveryController.confirmDeliveryOTP, { body: { orderId, otp: realOtp }, user: a.user, io }),
+    call(deliveryController.confirmDeliveryOTP, { body: { orderId, otp: realOtp }, user: a.user, io }),
   ]);
   assert.equal(d1.status, 200);
   assert.equal(d2.status, 200);
