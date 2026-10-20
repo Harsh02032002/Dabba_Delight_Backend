@@ -1,4 +1,5 @@
 const { DeliveryPartner, WalletTransaction, Notification } = require('../models/Others');
+const { settleDeliveredOrder } = require('../services/order-settlement.service');
 const Order = require('../models/Order');
 const User = require('../models/User');
 const Seller = require('../models/Seller');
@@ -74,6 +75,8 @@ async function completeDelivery({ orderId, partner, io, updatedBy }) {
   }
 
   await creditRiderDeliveryFee(partner, delivered);
+  // Seller/admin split, invoice and cashback — the same settlement as seller self-delivery
+  await settleDeliveredOrder(delivered._id).catch((e) => console.error('settleDeliveredOrder error:', e.message));
 
   emitOrderUpdate(io, delivered, { message: 'Your order has been delivered successfully!' });
   try {
@@ -761,7 +764,7 @@ exports.getEarnings = async (req, res) => {
       weekEarnings: week,
       totalDeliveries: deliveredOrders.length || partner.totalDeliveries || 0,
       todayDeliveries: todayDeliveries || partner.todayDeliveries || 0,
-      wallet: partner.wallet || total,
+      wallet: Number(partner.wallet) || 0,
       summary: {
         today,
         week,
@@ -993,24 +996,37 @@ exports.getWalletTransactions = async (req, res) => {
 
 exports.withdrawFromWallet = async (req, res) => {
   try {
-    const { amount } = req.body;
-    const partner = await DeliveryPartner.findOne({ userId: req.user._id });
-    if (partner.wallet < amount) {
-      return res.status(400).json({ success: false, message: 'Insufficient balance' });
+    const amount = Math.round(Number(req.body?.amount) * 100) / 100;
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ success: false, message: 'Enter a valid amount' });
     }
-    const updatedPartner = await DeliveryPartner.findByIdAndUpdate(
-      partner._id, 
-      { $inc: { wallet: -amount } }, 
-      { new: true }
+    const partner = await getPartnerForUser(req.user);
+    if (!partner) return res.status(404).json({ success: false, message: 'Delivery partner profile not found' });
+
+    // Deduct only if the balance covers it, in one step, so two requests cannot overdraw
+    const updatedPartner = await DeliveryPartner.findOneAndUpdate(
+      { _id: partner._id, wallet: { $gte: amount } },
+      { $inc: { wallet: -amount } },
+      { new: true },
     );
-    await WalletTransaction.create({
-      deliveryPartnerId: partner._id,
-      type: 'debit',
-      amount,
-      description: 'Wallet withdrawal',
-      referenceType: 'withdrawal',
-      balance: updatedPartner.wallet,
-    });
+    if (!updatedPartner) {
+      return res.status(400).json({ success: false, message: `Insufficient balance. Available: ₹${Number(partner.wallet || 0).toFixed(2)}` });
+    }
+    try {
+      await WalletTransaction.create({
+        userId: partner.userId,
+        deliveryPartnerId: partner._id,
+        type: 'debit',
+        amount,
+        description: 'Wallet withdrawal',
+        referenceType: 'withdrawal',
+        balance: updatedPartner.wallet,
+      });
+    } catch (recordErr) {
+      // Never take money without a record of it
+      await DeliveryPartner.updateOne({ _id: partner._id }, { $inc: { wallet: amount } });
+      throw recordErr;
+    }
     res.json({ success: true, wallet: updatedPartner.wallet });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
