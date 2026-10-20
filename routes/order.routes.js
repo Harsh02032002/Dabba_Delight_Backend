@@ -5,7 +5,9 @@ const uc = require('../controllers/user.controller');
 
 router.post('/quote', auth, oc.quoteOrder);
 router.post('/place', auth, oc.placeOrder);
+router.post('/create', auth, oc.placeOrder);
 router.get('/', auth, oc.getUserOrders);
+router.get('/my-orders', auth, oc.getUserOrders);
 router.get('/:orderId/track', auth, uc.getOrderTracking);
 router.get('/:id', auth, oc.getOrderById);
 router.post('/:id/rate', auth, oc.rateOrder);

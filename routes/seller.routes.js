@@ -10,6 +10,8 @@ router.get('/dashboard', sellerAuth, sc.getDashboard);
 // Orders
 router.get('/orders', sellerAuth, oc.getSellerOrders);
 router.patch('/orders/:id/status', sellerAuth, oc.updateOrderStatus);
+router.put('/orders/:id/status', sellerAuth, oc.updateOrderStatus);
+router.post('/orders/:id/accept', sellerAuth, (req, res) => { req.body.status = 'confirmed'; return oc.updateOrderStatus(req, res); });
 
 // Analytics
 router.get('/analytics', sellerAuth, sc.getAnalytics);
