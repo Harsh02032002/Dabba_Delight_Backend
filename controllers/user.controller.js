@@ -56,7 +56,11 @@ exports.topupWallet = async (req, res) => {
       notes: { purpose: 'wallet_topup', userId: String(req.user._id) },
     });
     res.json({ success: true, key: process.env.RAZORPAY_KEY_ID, orderId: order.id, amount: order.amount, currency: order.currency });
-  } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message }); }
+  } catch (err) {
+    // Razorpay errors carry details in err.error; never return an empty message
+    console.error('Wallet top-up order failed:', err?.error?.description || err?.message || err);
+    res.status(err.status || 502).json({ success: false, message: err.status ? err.message : 'Could not start the payment. Please try again in a moment.' });
+  }
 };
 
 // POST /api/user/wallet/verify { razorpay_order_id, razorpay_payment_id, razorpay_signature }
