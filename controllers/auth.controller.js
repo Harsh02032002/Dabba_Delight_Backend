@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Seller = require('../models/Seller');
 const { Referral, ReferralConfig } = require('../models/Others');
 const { sendEmail, generateCode } = require('../utils/email.service');
+const { tooManyCodeAttempts, recordWrongCode, wrongCodeMessage, TOO_MANY_ATTEMPTS } = require('../utils/codeAttempts');
 const { buildIdentifierQuery, sendDualOTP } = require('../utils/sms.service');
 const { getJwtSecret } = require('../utils/jwt');
 const { validateRegistration } = require('../utils/registration');
@@ -63,6 +64,7 @@ exports.register = async (req, res) => {
     // Generate verification code (sent to BOTH Email and Phone SMS)
     const code = generateCode();
     user.emailVerificationCode = code;
+    user.codeFailedAttempts = 0;
     user.emailVerificationExpires = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
     user.loginOtp = code;
     user.loginOtpExpires = new Date(Date.now() + 15 * 60 * 1000);
@@ -139,37 +141,13 @@ exports.register = async (req, res) => {
 };
 
 // Helper: verify user password with existing auto-repair fallbacks
-async function checkUserPassword(user, password, rawIdentifier) {
+async function checkUserPassword(user, password) {
   if (!password || !user.password) return false;
-  let isMatch = false;
   try {
-    isMatch = await user.comparePassword(password);
+    return await user.comparePassword(password);
   } catch {
-    // Continue to check auto-repair fallback
+    return false;
   }
-
-  const cleanEmail = String(rawIdentifier || '').trim().toLowerCase();
-  // Auto-repair double-hashed password for Akash Kitchen seller account
-  if (!isMatch && (cleanEmail === 'akash.kitchen@dabbanation.com' || user.phone === '7303023539') && password === 'akash123') {
-    console.log('⚡ Auto-repairing double-hashed password for Akash Kitchen...');
-    user.password = 'akash123';
-    user.isVerified = true;
-    user.isBlocked = false;
-    await user.save();
-    isMatch = true;
-  }
-
-  // Auto-repair / ensure login for Geeta ki Rasoi seller account
-  if (!isMatch && (cleanEmail === 'gk5499411@gmail.com' || user.phone === '7676802874') && (password === 'password123' || password === 'geeta123')) {
-    console.log('⚡ Auto-repairing password for Geeta ki Rasoi (gk5499411@gmail.com)...');
-    user.password = password;
-    user.isVerified = true;
-    user.isBlocked = false;
-    await user.save();
-    isMatch = true;
-  }
-
-  return isMatch;
 }
 
 // Helper: find user by identifier with priority given to requested role (prevents role collisions when phone is shared)
@@ -227,7 +205,7 @@ exports.sendLoginOtp = async (req, res) => {
 
     // If password was provided, verify it before sending OTP
     if (password !== undefined && password !== '') {
-      const isMatch = await checkUserPassword(user, password, rawId);
+      const isMatch = await checkUserPassword(user, password);
       if (!isMatch) {
         return res.status(401).json({ success: false, message: 'Invalid password' });
       }
@@ -235,6 +213,7 @@ exports.sendLoginOtp = async (req, res) => {
 
     const otp = generateCode();
     user.loginOtp = otp;
+    user.codeFailedAttempts = 0;
     user.loginOtpExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
     await user.save();
 
@@ -287,6 +266,8 @@ exports.verifyLoginOtp = async (req, res) => {
       });
     }
 
+    if (tooManyCodeAttempts(user)) return res.status(429).json({ success: false, message: TOO_MANY_ATTEMPTS });
+
     const now = new Date();
     const validLoginOtp =
       user.loginOtp &&
@@ -301,10 +282,12 @@ exports.verifyLoginOtp = async (req, res) => {
       user.emailVerificationExpires >= now;
 
     if (!validLoginOtp && !validEmailOtp) {
-      return res.status(400).json({ success: false, message: 'Invalid or expired OTP. Please try again.' });
+      const left = await recordWrongCode(user);
+      return res.status(left > 0 ? 400 : 429).json({ success: false, message: wrongCodeMessage(left, 'Invalid or expired OTP.') });
     }
 
     user.isVerified = true;
+    user.codeFailedAttempts = 0;
     user.loginOtp = undefined;
     user.loginOtpExpires = undefined;
     user.emailVerificationCode = undefined;
@@ -362,7 +345,7 @@ exports.login = async (req, res) => {
       });
     }
 
-    const isMatch = await checkUserPassword(user, password, rawId);
+    const isMatch = await checkUserPassword(user, password);
     if (!isMatch) return res.status(401).json({ success: false, message: 'Invalid credentials' });
 
     if (!user.isVerified) {
@@ -387,22 +370,28 @@ exports.verifyEmail = async (req, res) => {
     const rawId = (identifier || email || phone || '').trim();
     const user = await User.findOne(buildIdentifierQuery(rawId));
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (tooManyCodeAttempts(user)) return res.status(429).json({ success: false, message: TOO_MANY_ATTEMPTS });
 
     const now = new Date();
+    const submitted = String(code || '').trim();
     const validEmailCode =
-      user.emailVerificationCode === code &&
+      !!submitted &&
+      user.emailVerificationCode === submitted &&
       user.emailVerificationExpires &&
       user.emailVerificationExpires >= now;
     const validLoginCode =
-      user.loginOtp === code &&
+      !!submitted &&
+      user.loginOtp === submitted &&
       user.loginOtpExpires &&
       user.loginOtpExpires >= now;
 
     if (!validEmailCode && !validLoginCode) {
-      return res.status(400).json({ success: false, message: 'Invalid or expired verification code' });
+      const left = await recordWrongCode(user);
+      return res.status(left > 0 ? 400 : 429).json({ success: false, message: wrongCodeMessage(left, 'Invalid or expired verification code.') });
     }
 
     user.isVerified = true;
+    user.codeFailedAttempts = 0;
     user.emailVerificationCode = undefined;
     user.emailVerificationExpires = undefined;
     user.loginOtp = undefined;
@@ -425,6 +414,7 @@ exports.forgotPassword = async (req, res) => {
 
     const code = generateCode();
     user.resetPasswordCode = code;
+    user.codeFailedAttempts = 0;
     user.resetPasswordExpires = new Date(Date.now() + 15 * 60 * 1000);
     await user.save();
 
@@ -439,19 +429,28 @@ exports.forgotPassword = async (req, res) => {
 // POST /api/auth/reset-password
 exports.resetPassword = async (req, res) => {
   try {
-    const { email, code, newPassword } = req.body;
-    const user = await User.findOne({ email }).select('+password');
+    const { email, phone, identifier, code, newPassword } = req.body;
+    const rawId = String(identifier || email || phone || '').trim();
+    const submitted = String(code || '').trim();
+    if (!rawId || !submitted) return res.status(400).json({ success: false, message: 'Email and reset code are required' });
+    if (typeof newPassword !== 'string' || newPassword.length < 6) {
+      return res.status(400).json({ success: false, message: 'New password must be at least 6 characters' });
+    }
+    const user = await User.findOne(buildIdentifierQuery(rawId)).select('+password');
     if (!user) return res.status(400).json({ success: false, message: 'Invalid reset code' });
+    if (tooManyCodeAttempts(user)) return res.status(429).json({ success: false, message: TOO_MANY_ATTEMPTS });
 
     if (!user.resetPasswordCode || !user.resetPasswordExpires || user.resetPasswordExpires < new Date()) {
       return res.status(400).json({ success: false, message: 'Reset code expired' });
     }
 
-    if (user.resetPasswordCode !== code) {
-      return res.status(400).json({ success: false, message: 'Invalid reset code' });
+    if (user.resetPasswordCode !== submitted) {
+      const left = await recordWrongCode(user);
+      return res.status(left > 0 ? 400 : 429).json({ success: false, message: wrongCodeMessage(left, 'Invalid reset code.') });
     }
 
     user.password = newPassword;
+    user.codeFailedAttempts = 0;
     user.resetPasswordCode = undefined;
     user.resetPasswordExpires = undefined;
     await user.save();
@@ -594,8 +593,9 @@ exports.resendVerificationCode = async (req, res) => {
     }
 
     // Generate new verification code
-    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const verificationCode = generateCode();
     user.emailVerificationCode = verificationCode;
+    user.codeFailedAttempts = 0;
     user.emailVerificationExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
     user.loginOtp = verificationCode;
     user.loginOtpExpires = Date.now() + 10 * 60 * 1000;
@@ -624,3 +624,77 @@ exports.resendVerificationCode = async (req, res) => {
   }
 };
 
+
+// DELETE /api/auth/account (also /api/partner/account) { confirm: 'DELETE' }
+// Erases personal data and closes the account. Orders, invoices and wallet records are kept
+// (tax and accounting law) but no longer identify the person.
+const ACTIVE_ORDER_STATUSES = ['pending', 'confirmed', 'preparing', 'ready', 'out_for_delivery'];
+exports.deleteAccount = async (req, res) => {
+  try {
+    if (String(req.body?.confirm || '').trim().toUpperCase() !== 'DELETE') {
+      return res.status(400).json({ success: false, message: 'Type DELETE to confirm account deletion' });
+    }
+    const Order = require('../models/Order');
+    const Seller = require('../models/Seller');
+    const { Address, Wishlist, Notification, NotificationPreference, DeliveryPartner } = require('../models/Others');
+    const user = req.user;
+
+    const seller = await Seller.findOne({ userId: user._id });
+    const partner = await DeliveryPartner.findOne({ userId: user._id });
+
+    const busy = await Order.exists({
+      status: { $in: ACTIVE_ORDER_STATUSES },
+      $or: [
+        { userId: user._id },
+        ...(seller ? [{ sellerId: seller._id }] : []),
+        ...(partner ? [{ deliveryPartnerId: partner._id }] : []),
+      ],
+    });
+    if (busy) {
+      return res.status(409).json({ success: false, message: 'You have an order in progress. Please wait until it is delivered or cancelled, then try again.' });
+    }
+
+    const id = String(user._id);
+    await Promise.all([
+      Address.deleteMany({ userId: user._id }).catch(() => {}),
+      Wishlist.deleteMany({ userId: user._id }).catch(() => {}),
+      Notification.deleteMany({ userId: user._id }).catch(() => {}),
+      NotificationPreference.deleteMany({ userId: user._id }).catch(() => {}),
+    ]);
+
+    if (seller) {
+      await Seller.updateOne({ _id: seller._id }, {
+        $set: { isActive: false, isVerified: false, businessName: 'Closed kitchen', description: '' },
+        $unset: { phone: 1, email: 1, bankDetails: 1, kycDocuments: 1, logo: 1, coverImage: 1 },
+      });
+    }
+    if (partner) {
+      await DeliveryPartner.updateOne({ _id: partner._id }, {
+        $set: { name: 'Deleted rider', isOnline: false, isAvailable: false, isApproved: false },
+        $unset: { phone: 1, email: 1, bankDetails: 1, kycDocuments: 1, pushToken: 1, fcmToken: 1, vehicleNumber: 1, profileImage: 1, currentLocation: 1 },
+      });
+    }
+
+    await User.updateOne({ _id: user._id }, {
+      $set: {
+        name: 'Deleted user',
+        email: `deleted+${id}@deleted.dabbanation.in`,
+        isBlocked: true,
+        isVerified: false,
+        deletedAt: new Date(),
+      },
+      $unset: {
+        phone: 1, avatar: 1, banner: 1, address: 1, pushToken: 1, fcmToken: 1, cart: 1, location: 1,
+        loginOtp: 1, loginOtpExpires: 1, emailVerificationCode: 1, emailVerificationExpires: 1,
+        resetPasswordCode: 1, resetPasswordExpires: 1, referralCode: 1,
+      },
+    });
+    // Replace the password with a random one (hashed by the model) so the old one can never sign in
+    const fresh = await User.findById(user._id).select('+password');
+    if (fresh) { fresh.password = require('crypto').randomBytes(24).toString('hex'); await fresh.save(); }
+
+    res.json({ success: true, message: 'Your account has been deleted.' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
