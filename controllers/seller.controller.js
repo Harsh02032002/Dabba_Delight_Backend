@@ -436,12 +436,28 @@ exports.getPayouts = async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
+// A request for the admin to pay out earnings; limited to what the kitchen has actually earned
+const MIN_PAYOUT = 100;
 exports.requestPayout = async (req, res) => {
   try {
-    const { amount, method } = req.body;
-    if (amount < 100) return res.status(400).json({ message: 'Minimum payout is ₹100' });
+    const amount = Math.round(Number(req.body?.amount) * 100) / 100;
+    const method = ['bank_transfer', 'upi', 'cheque'].includes(req.body?.method) ? req.body.method : 'bank_transfer';
+    if (!Number.isFinite(amount) || amount < MIN_PAYOUT) {
+      return res.status(400).json({ success: false, message: `Minimum payout is ₹${MIN_PAYOUT}` });
+    }
+    const SellerWallet = require('../models/SellerWallet');
+    const wallet = await SellerWallet.findOne({ seller_id: req.seller._id }).lean();
+    const earned = Number(wallet?.pending_payout) || 0;
+    const open = await Payout.aggregate([
+      { $match: { sellerId: req.seller._id, status: { $in: ['requested', 'processing'] } } },
+      { $group: { _id: null, total: { $sum: '$amount' } } },
+    ]);
+    const available = Math.max(0, Math.round((earned - (open[0]?.total || 0)) * 100) / 100);
+    if (amount > available) {
+      return res.status(400).json({ success: false, message: `You can request up to ₹${available.toFixed(2)} right now`, available });
+    }
     const payout = await Payout.create({ sellerId: req.seller._id, amount, method });
-    res.status(201).json({ success: true, payout });
+    res.status(201).json({ success: true, payout, available: Math.round((available - amount) * 100) / 100 });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
@@ -614,21 +630,5 @@ exports.getWalletTransactions = async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
-exports.withdrawFromWallet = async (req, res) => {
-  try {
-    const { amount } = req.body;
-    if (req.seller.wallet < amount) {
-      return res.status(400).json({ success: false, message: 'Insufficient balance' });
-    }
-    const seller = await Seller.findByIdAndUpdate(req.seller._id, { $inc: { wallet: -amount } }, { new: true });
-    await WalletTransaction.create({
-      sellerId: req.seller._id,
-      type: 'debit',
-      amount,
-      description: 'Wallet withdrawal',
-      referenceType: 'withdrawal',
-      balance: seller.wallet,
-    });
-    res.json({ success: true, wallet: seller.wallet });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
-};
+// Kitchens are paid by the admin; a "withdrawal" is the same checked payout request
+exports.withdrawFromWallet = (req, res) => exports.requestPayout(req, res);
