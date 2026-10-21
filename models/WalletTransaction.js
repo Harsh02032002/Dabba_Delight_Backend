@@ -13,4 +13,6 @@ const walletTransactionSchema = new mongoose.Schema({
   razorpaySignature: { type: String },
 }, { timestamps: true });
 
+// One wallet credit per gateway payment
+walletTransactionSchema.index({ referenceType: 1, referenceId: 1 }, { unique: true, partialFilterExpression: { referenceType: 'topup', referenceId: { $type: 'string' } } });
 module.exports = mongoose.models.WalletTransaction || mongoose.model('WalletTransaction', walletTransactionSchema);
