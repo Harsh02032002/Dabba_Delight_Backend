@@ -85,7 +85,7 @@ const orderSchema = new mongoose.Schema({
   riderPayoutCreditedAt: Date,
   /** Set once the delivered order's seller/admin split and cashback have been applied */
   sellerSettledAt: Date,
-  deliveryOtp: { type: String, default: () => Math.floor(1000 + Math.random() * 9000).toString() },
+  deliveryOtp: { type: String, default: () => require('crypto').randomInt(1000, 10000).toString() },
   deliveryOtpAttempts: { type: Number, default: 0 },
   deliveryLocation: { lat: Number, lng: Number },
   pickupLocation: {
