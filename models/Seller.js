@@ -34,6 +34,7 @@ const sellerSchema = new mongoose.Schema({
   cuisines: [String],
   tags: [String],
   rating: { type: Number, default: 0 },
+  ratingCount: { type: Number, default: 0 },
   totalOrders: { type: Number, default: 0 },
   totalRevenue: { type: Number, default: 0 },
   commissionRate: { type: Number, default: 15 },
