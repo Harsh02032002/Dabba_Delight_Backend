@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { toPublicSeller } = require('../utils/publicSeller');
 const { Notification, WalletTransaction, Banner, DeliveryPartner } = require('../models/Others');
 const User = require('../models/User');
 const Seller = require('../models/Seller');
@@ -37,46 +38,77 @@ exports.deleteNotification = async (req, res) => {
 };
 
 // ─── Wallet ─────────────────────────────────────
+// Money only enters the wallet after the server verifies a Razorpay payment.
+const MIN_TOPUP = 1;
+const MAX_TOPUP = 50000;
+
+// POST /api/user/wallet/topup { amount } -> Razorpay order to pay; nothing is credited here
 exports.topupWallet = async (req, res) => {
   try {
-    const { amount } = req.body;
-    const user = await User.findByIdAndUpdate(req.user._id, { $inc: { wallet: amount } }, { new: true });
-    await WalletTransaction.create({
-      userId: req.user._id, type: 'credit', amount, description: 'Wallet top-up',
-      referenceType: 'topup', balance: user.wallet,
+    const amount = Math.round(Number(req.body?.amount) * 100) / 100;
+    if (!Number.isFinite(amount) || amount < MIN_TOPUP || amount > MAX_TOPUP) {
+      return res.status(400).json({ success: false, message: `Enter an amount between ₹${MIN_TOPUP} and ₹${MAX_TOPUP}` });
+    }
+    const { createGatewayOrder } = require('./payment.controller');
+    const order = await createGatewayOrder({
+      amountPaise: Math.round(amount * 100),
+      receipt: `wallet_${String(req.user._id).slice(-8)}_${Date.now()}`,
+      notes: { purpose: 'wallet_topup', userId: String(req.user._id) },
     });
-    
-    // ─── Create Notification for Wallet Top-up ───
-    await Notification.create({
-      userId: req.user._id,
-      type: 'wallet',
-      title: '💳 Wallet Topped Up',
-      message: `₹${amount} has been successfully added to your wallet. Current Balance: ₹${user.wallet}`,
-      isRead: false,
-    });
-    res.json({ success: true, wallet: user.wallet });
-  } catch (err) { res.status(500).json({ success: false, message: err.message }); }
+    res.json({ success: true, key: process.env.RAZORPAY_KEY_ID, orderId: order.id, amount: order.amount, currency: order.currency });
+  } catch (err) { res.status(err.status || 500).json({ success: false, message: err.message }); }
 };
 
+// POST /api/user/wallet/verify { razorpay_order_id, razorpay_payment_id, razorpay_signature }
 exports.verifyWalletPayment = async (req, res) => {
   try {
-    // After Razorpay payment verified, credit wallet
-    const { amount } = req.body;
+    const b = req.body || {};
+    const razorpayOrderId = b.razorpay_order_id || b.razorpayOrderId;
+    const razorpayPaymentId = b.razorpay_payment_id || b.razorpayPaymentId;
+    const razorpaySignature = b.razorpay_signature || b.razorpaySignature;
+    if (!razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
+      return res.status(400).json({ success: false, message: 'Payment details are missing' });
+    }
+
+    // Already credited (retry / double tap): return the current balance
+    const existing = await WalletTransaction.findOne({ referenceType: 'topup', referenceId: String(razorpayPaymentId) });
+    if (existing) {
+      if (String(existing.userId) !== String(req.user._id)) return res.status(409).json({ success: false, message: 'This payment has already been used' });
+      const u = await User.findById(req.user._id).select('wallet');
+      return res.json({ success: true, alreadyCredited: true, wallet: u?.wallet || 0 });
+    }
+
+    const { verifyGatewayPayment } = require('./payment.controller');
+    const check = await verifyGatewayPayment({ razorpayOrderId, razorpayPaymentId, razorpaySignature });
+    if (!check.ok) return res.status(check.status).json({ success: false, message: check.message });
+    const notes = check.order?.notes || {};
+    if (notes.purpose && notes.purpose !== 'wallet_topup') return res.status(400).json({ success: false, message: 'This payment is not a wallet top-up' });
+    if (notes.userId && String(notes.userId) !== String(req.user._id)) return res.status(403).json({ success: false, message: 'This payment belongs to another account' });
+    const amount = Math.round(Number(check.order?.amount_paid || 0)) / 100;
+    if (!(amount > 0)) return res.status(400).json({ success: false, message: 'Payment not completed yet' });
+
+    // Record first (unique per payment), then credit
+    let txn;
+    try {
+      txn = await WalletTransaction.create({
+        userId: req.user._id, type: 'credit', amount, description: 'Wallet top-up (Razorpay)',
+        referenceType: 'topup', referenceId: String(razorpayPaymentId),
+      });
+    } catch (dupErr) {
+      const u = await User.findById(req.user._id).select('wallet');
+      return res.json({ success: true, alreadyCredited: true, wallet: u?.wallet || 0 });
+    }
     const user = await User.findByIdAndUpdate(req.user._id, { $inc: { wallet: amount } }, { new: true });
-    await WalletTransaction.create({
-      userId: req.user._id, type: 'credit', amount, description: 'Wallet top-up verified',
-      referenceType: 'topup', balance: user.wallet,
-    });
-    
-    // ─── Create Notification for Wallet Top-up ───
+    await WalletTransaction.updateOne({ _id: txn._id }, { $set: { balance: user.wallet } });
+
     await Notification.create({
       userId: req.user._id,
       type: 'wallet',
-      title: '💳 Wallet Top-up Successful',
-      message: `Your payment of ₹${amount} was verified and added to your wallet. Current Balance: ₹${user.wallet}`,
+      title: 'Money added to wallet',
+      message: `₹${amount} was added to your wallet. Balance: ₹${user.wallet}`,
       isRead: false,
     });
-    res.json({ success: true, wallet: user.wallet });
+    res.json({ success: true, amount, wallet: user.wallet });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
@@ -116,7 +148,7 @@ exports.getSellers = async (req, res) => {
         image: seller.coverImage || DEFAULT_COVER,
       }));
 
-      return res.json({ success: true, sellers: sellersWithImages, total: sellersWithImages.length });
+      return res.json({ success: true, sellers: sellersWithImages.map(toPublicSeller), total: sellersWithImages.length });
     }
 
     const filter = { ...ELIGIBLE_SELLER_FILTER };
@@ -140,7 +172,7 @@ exports.getSellers = async (req, res) => {
       image: seller.coverImage || DEFAULT_COVER,
     }));
 
-    res.json({ success: true, sellers: sellersWithImages, total: sellers.length });
+    res.json({ success: true, sellers: sellersWithImages.map(toPublicSeller), total: sellers.length });
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 };
 
@@ -285,7 +317,7 @@ exports.getSellerById = async (req, res) => {
     seller.coverImage = seller.coverImage || DEFAULT_COVER;
     seller.image = seller.coverImage || DEFAULT_COVER;
 
-    res.json({ success: true, seller });
+    res.json({ success: true, seller: toPublicSeller(seller) });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -316,10 +348,10 @@ exports.getActiveBanners = async (req, res) => {
 exports.rateOrder = async (req, res) => {
   try {
     const { orderId } = req.params;
-    const { rating, review } = req.body;
-
-    if (!rating || rating < 1 || rating > 5) {
-      return res.status(400).json({ success: false, message: 'Rating must be between 1 and 5' });
+    const { review } = req.body;
+    const rating = parseRating(req.body?.rating);
+    if (!rating) {
+      return res.status(400).json({ success: false, message: 'Rating must be a whole number from 1 to 5' });
     }
 
     const Order = require('../models/Order');
@@ -356,63 +388,74 @@ exports.getSellerRatingBreakdown = async (req, res) => {
 };
 
 // POST /user/menu/:menuItemId/rate
+/** Whole-star rating 1..5, or null */
+const parseRating = (v) => {
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 1 && n <= 5 ? n : null;
+};
+
+/** Running average without re-reading every rating */
+const withRating = (doc, rating) => {
+  const count = Number(doc.ratingCount || doc.totalRatings || 0);
+  const avg = Number(doc.rating || 0);
+  doc.rating = Math.round((((avg * count) + rating) / (count + 1)) * 10) / 10;
+  doc.ratingCount = count + 1;
+};
+
+// POST /user/menu/:menuItemId/rate — only after receiving the dish, once per customer
 exports.rateMenuItem = async (req, res) => {
   try {
-    const { menuItemId } = req.params;
-    const { rating } = req.body;
-    const userId = req.user.id;
+    const rating = parseRating(req.body?.rating);
+    if (!rating) return res.status(400).json({ success: false, message: 'Rating must be a whole number from 1 to 5' });
+    const mongoose = require('mongoose');
+    if (!mongoose.Types.ObjectId.isValid(String(req.params.menuItemId))) return res.status(404).json({ success: false, message: 'Menu item not found' });
 
-    if (!rating || rating < 1 || rating > 5) {
-      return res.status(400).json({ success: false, message: 'Invalid rating' });
-    }
-
-    // Find the menu item
     const Product = require('../models/Product');
-    const menuItem = await Product.findById(menuItemId);
-    if (!menuItem) {
-      return res.status(404).json({ success: false, message: 'Menu item not found' });
+    const Order = require('../models/Order');
+    const { Review } = require('../models/Others');
+    const menuItem = await Product.findById(req.params.menuItemId);
+    if (!menuItem) return res.status(404).json({ success: false, message: 'Menu item not found' });
+
+    const order = await Order.findOne({ userId: req.user._id, status: 'delivered', 'items.menuItemId': menuItem._id }).select('_id').lean();
+    if (!order) return res.status(403).json({ success: false, message: 'You can rate a dish after it has been delivered to you' });
+
+    try {
+      await Review.create({ kind: 'item', orderId: order._id, userId: req.user._id, sellerId: menuItem.sellerId, productId: menuItem._id, rating, review: req.body?.review });
+    } catch (dup) {
+      return res.status(409).json({ success: false, message: 'You have already rated this dish' });
     }
-
-    // Update menu item rating (simple average for now)
-    const currentRating = menuItem.rating || 0;
-    const currentRatings = menuItem.ratingCount || 0;
-    
-    menuItem.rating = ((currentRating * currentRatings) + rating) / (currentRatings + 1);
-    menuItem.ratingCount = currentRatings + 1;
+    withRating(menuItem, rating);
     await menuItem.save();
-
     res.json({ success: true, rating: menuItem.rating });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// POST /user/sellers/:sellerId/rate
+// POST /user/sellers/:sellerId/rate — only after an order from this kitchen, once per customer
 exports.rateSeller = async (req, res) => {
   try {
-    const { sellerId } = req.params;
-    const { rating } = req.body;
-    const userId = req.user.id;
+    const rating = parseRating(req.body?.rating);
+    if (!rating) return res.status(400).json({ success: false, message: 'Rating must be a whole number from 1 to 5' });
+    const mongoose = require('mongoose');
+    if (!mongoose.Types.ObjectId.isValid(String(req.params.sellerId))) return res.status(404).json({ success: false, message: 'Seller not found' });
 
-    if (!rating || rating < 1 || rating > 5) {
-      return res.status(400).json({ success: false, message: 'Invalid rating' });
-    }
-
-    // Find the seller
     const Seller = require('../models/Seller');
-    const seller = await Seller.findById(sellerId);
-    if (!seller) {
-      return res.status(404).json({ success: false, message: 'Seller not found' });
+    const Order = require('../models/Order');
+    const { Review } = require('../models/Others');
+    const seller = await Seller.findById(req.params.sellerId);
+    if (!seller) return res.status(404).json({ success: false, message: 'Seller not found' });
+
+    const order = await Order.findOne({ userId: req.user._id, sellerId: seller._id, status: 'delivered' }).select('_id').lean();
+    if (!order) return res.status(403).json({ success: false, message: 'You can rate a kitchen after an order from it has been delivered' });
+
+    try {
+      await Review.create({ kind: 'seller', orderId: order._id, userId: req.user._id, sellerId: seller._id, rating, review: req.body?.review });
+    } catch (dup) {
+      return res.status(409).json({ success: false, message: 'You have already rated this kitchen' });
     }
-
-    // Update seller rating (simple average for now)
-    const currentRating = seller.rating || 0;
-    const currentRatings = seller.ratingCount || 0;
-    
-    seller.rating = ((currentRating * currentRatings) + rating) / (currentRatings + 1);
-    seller.ratingCount = currentRatings + 1;
+    withRating(seller, rating);
     await seller.save();
-
     res.json({ success: true, rating: seller.rating });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
