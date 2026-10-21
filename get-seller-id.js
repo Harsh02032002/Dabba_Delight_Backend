@@ -1,7 +1,8 @@
+require('dotenv').config(); if (!process.env.MONGO_URI) { console.error('MONGO_URI is required (set it in the environment)'); process.exit(1); }
 const mongoose = require('mongoose');
 const Seller = require('./models/Seller');
 
-mongoose.connect('mongodb+srv://Harsh:Harsh%%402925@cluster0.hddqr9e.mongodb.net/Dabbanation_db?retryWrites=true&w=majority&appName=Cluster0')
+mongoose.connect(process.env.MONGO_URI)
 .then(async () => {
   console.log('Connected to MongoDB');
   
