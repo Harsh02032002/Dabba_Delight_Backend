@@ -59,89 +59,20 @@ console.log('📁 .env file exists:', fs.existsSync(envPath));
 
 require('dotenv').config({ path: envPath });
 
-// Debug: Check if dotenv loaded variables
-console.log('🔍 Debug - EMAIL_USER after dotenv:', process.env.EMAIL_USER);
-console.log('🔍 Debug - EMAIL_PASS after dotenv:', process.env.EMAIL_PASS ? 'SET' : 'UNDEFINED');
-console.log('🔍 Debug - JWT_SECRET after dotenv:', process.env.JWT_SECRET ? 'SET' : 'UNDEFINED');
-
-// Additional check for specific variables
-if (!process.env.JWT_SECRET && fs.existsSync(envPath)) {
-  try {
-    const c = fs.readFileSync(envPath, 'utf8');
-    const m = c && c.match(/JWT_SECRET\s*=\s*([^\r\n#]+)/);
-    if (m) process.env.JWT_SECRET = m[1].trim();
-  } catch (error) {
-    console.error('❌ Error reading JWT_SECRET:', error.message);
-  }
+// All credentials come from the environment (.env locally, the host's environment in production).
+// Nothing secret lives in this repository.
+const REQUIRED_ENV = ['MONGO_URI', 'JWT_SECRET'];
+const missingEnv = REQUIRED_ENV.filter((k) => !process.env[k] || !String(process.env[k]).trim());
+if (missingEnv.length) {
+  console.error(`❌ Missing required environment variables: ${missingEnv.join(', ')}. Set them in .env (local) or in the server environment, then restart.`);
+  process.exit(1);
 }
-
-// Additional check for specific variables
-if (!process.env.JWT_SECRET && fs.existsSync(envPath)) {
-  try {
-    const c = fs.readFileSync(envPath, 'utf8');
-    const m = c && c.match(/JWT_SECRET\s*=\s*([^\r\n#]+)/);
-    if (m) process.env.JWT_SECRET = m[1].trim();
-  } catch (error) {
-    console.error('❌ Error reading JWT_SECRET:', error.message);
-  }
+for (const k of ['RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET', 'CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET', 'EMAIL_USER', 'EMAIL_PASS']) {
+  if (!process.env[k]) console.warn(`⚠️  ${k} is not set; the features that need it are disabled`);
 }
-
-// Set fallback values from memory if not loaded
-if (!process.env.MONGO_URI) {
-  process.env.MONGO_URI = 'mongodb+srv://Harsh:Harsh%402925@cluster0.hddqr9e.mongodb.net/Dabbanation_db?retryWrites=true&w=majority&appName=Cluster0&readPreference=primary';
-  console.log('🔄 Using fallback MONGO_URI');
-}
-
-if (!process.env.JWT_SECRET) {
-  process.env.JWT_SECRET = 'QWEWRWETWQEIUTIOEKALDJGAADSKGLJASDKLGJIOETU';
-  console.log('🔄 Using fallback JWT_SECRET');
-}
-
-if (!process.env.RAZORPAY_KEY_ID) {
-  process.env.RAZORPAY_KEY_ID = 'rzp_test_RDG5JVvoKELSk0';
-  console.log('🔄 Using fallback RAZORPAY_KEY_ID');
-}
-
-if (!process.env.RAZORPAY_KEY_SECRET) {
-  process.env.RAZORPAY_KEY_SECRET = 'N5tamdzyBKMT2E1M2TVR01PT';
-  console.log('🔄 Using fallback RAZORPAY_KEY_SECRET');
-}
-
-if (!process.env.FRONTEND_URL) {
-  process.env.FRONTEND_URL = 'http://localhost:8080';
-  console.log('🔄 Using fallback FRONTEND_URL');
-}
-
-// Cloudinary fallbacks (needed when .env not present on production server)
-if (!process.env.CLOUDINARY_CLOUD_NAME) {
-  process.env.CLOUDINARY_CLOUD_NAME = 'dnagpw02j';
-  console.log('🔄 Using fallback CLOUDINARY_CLOUD_NAME');
-}
-
-if (!process.env.CLOUDINARY_API_KEY) {
-  process.env.CLOUDINARY_API_KEY = '877691165821265';
-  console.log('🔄 Using fallback CLOUDINARY_API_KEY');
-}
-
-if (!process.env.CLOUDINARY_API_SECRET) {
-  process.env.CLOUDINARY_API_SECRET = '6tlAylPl-wxPCwa93RPsDDRk7WM';
-  console.log('🔄 Using fallback CLOUDINARY_API_SECRET');
-}
-
-if (!process.env.TWOFACTOR_API_KEY) {
-  process.env.TWOFACTOR_API_KEY = 'c6a53efd-c7e3-11f1-af74-0200cd936042';
-}
-
+if (!process.env.FRONTEND_URL) process.env.FRONTEND_URL = 'http://localhost:8080';
 if (!process.env.BACKEND_URL) {
   process.env.BACKEND_URL = process.env.NODE_ENV === 'production' ? 'https://api.dabbanation.in' : `http://localhost:${process.env.PORT || 5000}`;
-  console.log('🔄 Using fallback BACKEND_URL:', process.env.BACKEND_URL);
-}
-
-if (!process.env.JWT_SECRET && fs.existsSync(envPath)) {
-  try {
-    const v = fs.readFileSync(envPath, 'utf8').match(/JWT_SECRET\s*=\s*([^\r\n#]+)/)?.[1]?.trim();
-    if (v) process.env.JWT_SECRET = v;
-  } catch (_) {}
 }
 
 const express = require('express');
@@ -590,6 +521,22 @@ app.use('/assets', express.static(path.join(__dirname, 'public/assets')));
 connectDB();
 
 // ─── Routes ─────────────────────────────────────────
+// ─── Brute-force protection on sign-in, OTP and password reset ──────────────
+// Behind the production reverse proxy the client IP is in X-Forwarded-For; TRUST_PROXY=0 turns this off.
+app.set('trust proxy', process.env.TRUST_PROXY !== undefined ? Number(process.env.TRUST_PROXY) : 1);
+const rateLimit = require('express-rate-limit');
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: Number(process.env.AUTH_RATE_LIMIT) || 30,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip: () => process.env.NODE_ENV === 'test',
+  message: { success: false, message: 'Too many attempts. Please wait a few minutes and try again.' },
+});
+const AUTH_LIMITED = ['/login', '/register', '/send-login-otp', '/verify-login-otp', '/verify-email', '/forgot-password', '/reset-password', '/resend-verification', '/change-password'];
+for (const base of ['/api/auth', '/auth']) app.use(AUTH_LIMITED.map((p) => base + p), authLimiter);
+for (const base of ['/api/partner', '/partner']) app.use(['/login', '/register', '/send-login-otp', '/verify-login-otp'].map((p) => base + p), authLimiter);
+
 app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/auth', require('./routes/auth.routes'));
 app.use('/partner', require('./routes/partner.routes'));
