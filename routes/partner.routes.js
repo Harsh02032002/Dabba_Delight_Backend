@@ -14,6 +14,10 @@ router.post('/verify-login-otp', dc.verifyPartnerLoginOtp);
 // Authenticated partner routes
 router.use(auth);
 
+// Account deletion (same rules as /api/auth/account)
+router.delete('/account', require('../controllers/auth.controller').deleteAccount);
+router.post('/account/delete', require('../controllers/auth.controller').deleteAccount);
+
 // KYC Verification
 router.get('/kyc', dc.getKycStatus);
 router.post('/kyc/document', ...s3Upload('document', 'rider-kyc'), dc.uploadKycDocument);
