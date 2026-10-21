@@ -10,10 +10,9 @@ const mongoose = require('mongoose');
 const Razorpay = require('razorpay');
 
 // Initialize Razorpay
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET
-});
+const razorpay = process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET
+  ? new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET })
+  : null; // payouts through Razorpay are disabled until keys are configured
 
 // ============= ADMIN WALLET FUNCTIONS =============
 
