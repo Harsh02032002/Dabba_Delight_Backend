@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const { getJwtSecret } = require('../utils/jwt');
 const User = require('../models/User');
 
 const adminAuth = async (req, res, next) => {
@@ -10,7 +11,7 @@ const adminAuth = async (req, res, next) => {
     }
 
     console.log('Admin auth: Verifying token...');
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret-key-for-development');
+    const decoded = jwt.verify(token, getJwtSecret());
     console.log('Admin auth: Token decoded for user:', decoded.email);
     
     const user = await User.findById(decoded.id);
