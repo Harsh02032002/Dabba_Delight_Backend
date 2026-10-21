@@ -244,7 +244,7 @@ exports.placeOrder = async (req, res) => {
 
       order = new Order({
         userId: req.user._id,
-        deliveryOtp: Math.floor(1000 + Math.random() * 9000).toString(),
+        deliveryOtp: require('crypto').randomInt(1000, 10000).toString(),
         sellerId,
         items,
         deliveryAddress: sanitizedAddress,
@@ -477,23 +477,10 @@ exports.deleteOrder = async (req, res) => {
 };
 
 // POST /api/user/orders/:id/rate
-exports.rateOrder = async (req, res) => {
-  try {
-    const { rating, review } = req.body;
-    const order = await Order.findById(req.params.id);
-    if (!order) return res.status(404).json({ message: 'Order not found' });
-    if (order.status !== 'delivered') return res.status(400).json({ message: 'Can only rate delivered orders' });
-    order.rating = rating;
-    order.review = review || '';
-    await order.save();
-    // Update seller average rating
-    const sellerOrders = await Order.find({ sellerId: order.sellerId, rating: { $exists: true, $ne: null } });
-    const avgRating = sellerOrders.reduce((s, o) => s + o.rating, 0) / sellerOrders.length;
-    await Seller.findByIdAndUpdate(order.sellerId, { rating: Math.round(avgRating * 10) / 10 });
-    res.json({ success: true, message: 'Rating submitted' });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
+// Same rules as /api/user/orders/:orderId/rate: owner only, delivered, whole stars 1..5
+exports.rateOrder = (req, res) => {
+  req.params.orderId = req.params.orderId || req.params.id;
+  return require('./user.controller').rateOrder(req, res);
 };
 
 // POST /api/user/orders/:id/cancel
