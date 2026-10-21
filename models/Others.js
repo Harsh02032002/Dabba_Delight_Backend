@@ -195,9 +195,14 @@ const reviewSchema = new mongoose.Schema(
     review: String,
     reply: { message: String, repliedAt: Date },
     images: [String],
+    /** 'seller' / 'item' ratings are one per customer; order reviews leave this unset */
+    kind: { type: String, enum: ["order", "seller", "item"] },
+    productId: { type: mongoose.Schema.Types.ObjectId, ref: "Product" },
   },
   { timestamps: true },
 );
+reviewSchema.index({ userId: 1, sellerId: 1, kind: 1 }, { unique: true, partialFilterExpression: { kind: "seller" } });
+reviewSchema.index({ userId: 1, productId: 1, kind: 1 }, { unique: true, partialFilterExpression: { kind: "item" } });
 const Review = mongoose.model("Review", reviewSchema);
 
 // ─── Campaign ───────────────────────────────────
@@ -957,6 +962,8 @@ const walletTransactionSchema = new mongoose.Schema(
   },
   { timestamps: true },
 );
+// One wallet credit per gateway payment
+walletTransactionSchema.index({ referenceType: 1, referenceId: 1 }, { unique: true, partialFilterExpression: { referenceType: 'topup', referenceId: { $type: 'string' } } });
 const WalletTransaction = mongoose.model(
   "WalletTransaction",
   walletTransactionSchema,
