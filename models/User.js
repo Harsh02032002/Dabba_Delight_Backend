@@ -24,6 +24,10 @@ const userSchema = new mongoose.Schema({
   emailVerificationExpires: Date,
   loginOtp: String,
   loginOtpExpires: Date,
+  /** Wrong one-time-code entries since the last code was sent (see utils/codeAttempts) */
+  codeFailedAttempts: { type: Number, default: 0 },
+  /** Set when the user deleted their account (personal data is erased; orders are kept anonymised) */
+  deletedAt: Date,
   resetPasswordCode: String,
   resetPasswordExpires: Date,
 }, { timestamps: true });
