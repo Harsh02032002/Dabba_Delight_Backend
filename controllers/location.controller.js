@@ -1,4 +1,5 @@
 const { Address } = require('../models/Others');
+const { toPublicSeller } = require('../utils/publicSeller');
 const Seller = require('../models/Seller');
 const { findNearbySellers, clampRadiusKm } = require('../utils/sellerGeo');
 
@@ -101,7 +102,7 @@ exports.getNearbySellers = async (req, res) => {
     }));
 
     console.log(`[getNearbySellers] user=${hasUserCoords ? userPoint.join(',') : 'n/a'} area="${city || locationName || ''}" radiusKm=${radiusKm} -> ${sellersWithImages.length} sellers`);
-    res.json({ success: true, sellers: sellersWithImages, total: sellersWithImages.length });
+    res.json({ success: true, sellers: sellersWithImages.map(toPublicSeller), total: sellersWithImages.length });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
