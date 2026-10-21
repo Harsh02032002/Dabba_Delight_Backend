@@ -1,3 +1,4 @@
+require('dotenv').config(); if (!process.env.MONGO_URI) { console.error('MONGO_URI is required (set it in the environment)'); process.exit(1); }
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 require('dotenv').config();
@@ -6,7 +7,7 @@ const User = require('./models/User');
 const Seller = require('./models/Seller');
 const Product = require('./models/Product');
 
-const MONGO_URI = process.env.MONGO_URI || 'mongodb+srv://Harsh:Harsh%402925@cluster0.hddqr9e.mongodb.net/Dabbanation_db?retryWrites=true&w=majority&appName=Cluster0&readPreference=primary';
+const MONGO_URI = process.env.MONGO_URI;
 
 async function fixAndSeedDeoria() {
   try {
