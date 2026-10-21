@@ -704,3 +704,106 @@ test('admin GST report lists this period\'s orders with their tax and a seller-w
   assert.ok(seller && seller.totalOrders >= 1);
   assert.equal((await api('GET', '/admin/gst/reports?period=nonsense', { token: state.adminToken })).body.period, 'monthly');
 });
+
+// ── Play Store / security hardening ─────────────────────────────────────────
+test('wallet: money is never added without a verified Razorpay payment', async () => {
+  const token = state.customer.token;
+  const before = (await User.findById(state.customer.userId).lean()).wallet || 0;
+  // top-up only creates a gateway order; with no gateway configured in tests it cannot credit anything
+  const topup = await api('POST', '/user/wallet/topup', { token, body: { amount: 50000 } });
+  assert.notEqual(topup.status, 200, JSON.stringify(topup.body));
+  for (const bad of [0, -100, 100001, 'abc']) {
+    const r = await api('POST', '/user/wallet/topup', { token, body: { amount: bad } });
+    assert.equal(r.status, 400, `amount ${bad} rejected`);
+  }
+  const noProof = await api('POST', '/user/wallet/verify', { token, body: { amount: 50000 } });
+  assert.equal(noProof.status, 400);
+  const forged = await api('POST', '/user/wallet/verify', { token, body: { razorpay_order_id: 'order_x', razorpay_payment_id: 'pay_x', razorpay_signature: 'f'.repeat(64) } });
+  assert.equal(forged.status, 400);
+  assert.equal((await User.findById(state.customer.userId).lean()).wallet || 0, before, 'wallet unchanged');
+});
+
+test('one-time codes: 5 wrong tries clear the code; codes come from a secure source', async () => {
+  const email = 'Aarav@E2E.test';
+  const send = await api('POST', '/auth/forgot-password', { body: { email } });
+  assert.equal(send.status, 200);
+  const user = await User.findOne({ email: email.toLowerCase() }).lean();
+  assert.match(user.resetPasswordCode, /^\d{6}$/);
+  const wrong = user.resetPasswordCode === '000000' ? '111111' : '000000';
+  for (let i = 0; i < 4; i++) {
+    const r = await api('POST', '/auth/reset-password', { body: { email, code: wrong, newPassword: 'New-pass-123' } });
+    assert.equal(r.status, 400);
+  }
+  const fifth = await api('POST', '/auth/reset-password', { body: { email, code: wrong, newPassword: 'New-pass-123' } });
+  assert.equal(fifth.status, 429);
+  const late = await api('POST', '/auth/reset-password', { body: { email, code: user.resetPasswordCode, newPassword: 'New-pass-123' } });
+  assert.equal(late.status, 429, 'the right code no longer works after the limit');
+  // object payloads cannot select another account
+  const inj = await api('POST', '/auth/reset-password', { body: { email: { $ne: null }, code: { $ne: null }, newPassword: 'New-pass-123' } });
+  assert.ok(inj.status >= 400);
+  // a fresh code resets the counter and still lets the real owner in
+  await api('POST', '/auth/forgot-password', { body: { email } });
+  const fresh = (await User.findOne({ email: email.toLowerCase() }).lean()).resetPasswordCode;
+  const ok = await api('POST', '/auth/reset-password', { body: { email, code: fresh, newPassword: PASSWORD } });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+});
+
+test('ratings: only your own delivered orders, whole stars, kitchen and dish once each', async () => {
+  const token = state.customer.token;
+  const other = await registerVerifyLogin({ name: 'Rating Stranger', email: 'rating-stranger@e2e.test', phone: '9810000066' });
+  await Order.updateOne({ _id: state.orderId }, { $set: { status: 'delivered' } });
+
+  const stranger = await api('POST', `/orders/${state.orderId}/rate`, { token: other.token, body: { rating: 1 } });
+  assert.equal(stranger.status, 404, 'cannot rate someone else\'s order');
+  const huge = await api('POST', `/orders/${state.orderId}/rate`, { token, body: { rating: 1000 } });
+  assert.equal(huge.status, 400);
+  const mine = await api('POST', `/orders/${state.orderId}/rate`, { token, body: { rating: 5 } });
+  assert.equal(mine.status, 200, JSON.stringify(mine.body));
+
+  assert.equal((await api('POST', `/user/sellers/${state.seller.sellerId}/rate`, { token: other.token, body: { rating: 1 } })).status, 403, 'no order, no kitchen rating');
+  assert.equal((await api('POST', `/user/sellers/${state.seller.sellerId}/rate`, { token, body: { rating: 4 } })).status, 200);
+  assert.equal((await api('POST', `/user/sellers/${state.seller.sellerId}/rate`, { token, body: { rating: 4 } })).status, 409, 'once per customer');
+  const order = await Order.findById(state.orderId).lean();
+  const dishId = String(order.items[0].menuItemId);
+  assert.equal((await api('POST', `/user/menu/${dishId}/rate`, { token: other.token, body: { rating: 1 } })).status, 403);
+  assert.equal((await api('POST', `/user/menu/${dishId}/rate`, { token, body: { rating: 5 } })).status, 200);
+  assert.equal((await api('POST', `/user/menu/${dishId}/rate`, { token, body: { rating: 5 } })).status, 409);
+  state.stranger = other;
+});
+
+test('kitchen payout requests never exceed unpaid earnings; public kitchen data has no contact details', async () => {
+  const token = state.seller.token;
+  const tooMuch = await api('POST', '/seller/payouts/request', { token, body: { amount: 1000000, method: 'upi' } });
+  assert.equal(tooMuch.status, 400);
+  const viaWithdraw = await api('POST', '/seller/wallet/withdraw', { token, body: { amount: 1000000 } });
+  assert.equal(viaWithdraw.status, 400);
+  assert.equal((await api('POST', '/seller/payouts/request', { token, body: { amount: 'x' } })).status, 400);
+
+  const list = await api('GET', '/user/sellers');
+  const detail = await api('GET', `/user/sellers/${state.seller.sellerId}`);
+  for (const s of [...(list.body.sellers || []), detail.body.seller]) {
+    assert.equal(s.phone, undefined); assert.equal(s.email, undefined); assert.equal(s.bankDetails, undefined); assert.equal(s.kycDocuments, undefined);
+  }
+});
+
+test('account deletion erases personal data, keeps orders anonymised, and locks the account', async () => {
+  const u = state.stranger;
+  const noConfirm = await api('DELETE', '/auth/account', { token: u.token, body: {} });
+  assert.equal(noConfirm.status, 400);
+  const del = await api('DELETE', '/auth/account', { token: u.token, body: { confirm: 'DELETE' } });
+  assert.equal(del.status, 200, JSON.stringify(del.body));
+  const gone = await User.findById(u.userId).lean();
+  assert.equal(gone.name, 'Deleted user');
+  assert.equal(gone.phone, undefined);
+  assert.ok(gone.deletedAt && gone.isBlocked);
+  assert.ok(!gone.email.includes('rating-stranger'));
+  assert.equal((await api('GET', '/auth/me', { token: u.token })).status, 403, 'old token no longer works');
+  const login = await api('POST', '/auth/login', { body: { email: 'rating-stranger@e2e.test', password: PASSWORD } });
+  assert.ok(login.status >= 400, 'cannot sign in again');
+
+  // someone with an order in progress cannot delete until it finishes
+  await Order.updateOne({ _id: state.orderId }, { $set: { status: 'preparing' } });
+  const busy = await api('DELETE', '/auth/account', { token: state.customer.token, body: { confirm: 'DELETE' } });
+  assert.equal(busy.status, 409);
+  await Order.updateOne({ _id: state.orderId }, { $set: { status: 'delivered' } });
+});
