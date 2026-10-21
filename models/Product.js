@@ -26,6 +26,7 @@ const productSchema = new mongoose.Schema({
   fullPlatePrice: { type: Number },
   stock: { type: Number, default: -1 },
   rating: { type: Number, default: 0 },
+  ratingCount: { type: Number, default: 0 },
   totalOrders: { type: Number, default: 0 },
   status: { type: String, enum: ['draft', 'published', 'archived'], default: 'published' },
 
