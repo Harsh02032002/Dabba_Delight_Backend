@@ -5,35 +5,12 @@ const { generateInvoice } = require('../services/html-invoice.service');
 let razorpay;
 try {
   const Razorpay = require('razorpay');
-  
-  // Check if credentials are available
-  const keyId = process.env.RAZORPAY_KEY_ID;
-  const keySecret = process.env.RAZORPAY_KEY_SECRET;
-  
-  console.log('🔧 Razorpay Configuration Check:');
-  console.log('RAZORPAY_KEY_ID defined:', !!keyId);
-  console.log('RAZORPAY_KEY_SECRET defined:', !!keySecret);
-  console.log('RAZORPAY_KEY_ID length:', keyId?.length || 0);
-  console.log('RAZORPAY_KEY_SECRET length:', keySecret?.length || 0);
-  
-  // Use environment variables or fallback
-  const razorpayKeyId = keyId || 'rzp_test_RDG5JVvoKELSk0';
-  const razorpayKeySecret = keySecret || 'N5tamdzyBKMT2E1M2TVR01PT';
-  
-  console.log('🔑 Using Razorpay Key ID:', razorpayKeyId.substring(0, 10) + '...');
-  console.log('🔑 Using Razorpay Secret (length):', razorpayKeySecret.length);
-  
-  razorpay = new Razorpay({ 
-    key_id: razorpayKeyId, 
-    key_secret: razorpayKeySecret 
-  });
-  
-  if (!keyId || !keySecret) {
-    console.log('⚠️  Using fallback Razorpay credentials');
+  if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
+    razorpay = new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET });
   } else {
-    console.log('✅ Razorpay initialized with environment credentials');
+    console.warn('⚠️  Razorpay keys are not set; online payments are disabled');
   }
-} catch (e) { 
+} catch (e) {
   console.error('❌ Razorpay initialization failed:', e.message);
 }
 
@@ -74,8 +51,7 @@ exports.createRazorpayOrder = async (req, res) => {
       notes: dnOrder ? { dnOrderId: String(dnOrder._id) } : undefined,
     });
 
-    // Use environment key or fallback
-    const razorpayKey = process.env.RAZORPAY_KEY_ID || 'rzp_test_RDG5JVvoKELSk0';
+    const razorpayKey = process.env.RAZORPAY_KEY_ID;
 
     res.json({
       success: true,
@@ -100,12 +76,33 @@ const isValidRazorpaySignature = (razorpayOrderId, razorpayPaymentId, razorpaySi
 };
 exports.isValidRazorpaySignature = isValidRazorpaySignature;
 
+/** Create a Razorpay order the server controls (amount in paise) */
+exports.createGatewayOrder = async ({ amountPaise, receipt, notes }) => {
+  if (!razorpay) { const e = new Error('Online payments are not configured'); e.status = 503; throw e; }
+  return razorpay.orders.create({ amount: amountPaise, currency: 'INR', receipt, notes });
+};
+
+/** Verify a checkout response and return the Razorpay order (with amount_paid and notes), or an error */
+exports.verifyGatewayPayment = async ({ razorpayOrderId, razorpayPaymentId, razorpaySignature }) => {
+  if (!isValidRazorpaySignature(razorpayOrderId, razorpayPaymentId, razorpaySignature, process.env.RAZORPAY_KEY_SECRET)) {
+    return { ok: false, status: 400, message: 'Payment could not be verified' };
+  }
+  if (!razorpay) return { ok: false, status: 503, message: 'Online payments are not configured' };
+  try {
+    const order = await razorpay.orders.fetch(razorpayOrderId);
+    return { ok: true, order };
+  } catch (err) {
+    console.error('Razorpay order lookup failed:', err.message);
+    return { ok: false, status: 502, message: 'Could not confirm the payment with Razorpay. Please try again in a moment.' };
+  }
+};
+
 /**
  * Confirms a Razorpay checkout response for an exact amount (signature + amount actually paid).
  * Returns { ok: true } or { ok: false, status, message }. Used for subscription purchases.
  */
 exports.confirmRazorpayPayment = async ({ razorpayOrderId, razorpayPaymentId, razorpaySignature, amountPaise }) => {
-  const secret = process.env.RAZORPAY_KEY_SECRET || 'N5tamdzyBKMT2E1M2TVR01PT';
+  const secret = process.env.RAZORPAY_KEY_SECRET;
   if (!isValidRazorpaySignature(razorpayOrderId, razorpayPaymentId, razorpaySignature, secret)) {
     return { ok: false, status: 400, message: 'Payment could not be verified' };
   }
@@ -129,8 +126,7 @@ exports.verifyRazorpayPayment = async (req, res) => {
   try {
     const { razorpayOrderId, razorpayPaymentId, razorpaySignature, orderId } = req.body;
 
-    // Use environment secret or fallback
-    const razorpaySecret = process.env.RAZORPAY_KEY_SECRET || 'N5tamdzyBKMT2E1M2TVR01PT';
+    const razorpaySecret = process.env.RAZORPAY_KEY_SECRET;
 
     if (!isValidRazorpaySignature(razorpayOrderId, razorpayPaymentId, razorpaySignature, razorpaySecret)) {
       return res.status(400).json({ success: false, message: 'Invalid signature' });
