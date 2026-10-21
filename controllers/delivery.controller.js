@@ -165,6 +165,7 @@ async function creditRiderDeliveryFee(partner, order) {
 }
 
 const { generateCode } = require('../utils/email.service');
+const { tooManyCodeAttempts, recordWrongCode, wrongCodeMessage, TOO_MANY_ATTEMPTS } = require('../utils/codeAttempts');
 const { buildIdentifierQuery, sendDualOTP } = require('../utils/sms.service');
 
 async function resolvePartnerAccount(rawInput) {
@@ -268,6 +269,7 @@ exports.sendPartnerLoginOtp = async (req, res) => {
 
     const otp = generateCode();
     user.loginOtp = otp;
+    user.codeFailedAttempts = 0;
     user.loginOtpExpires = new Date(Date.now() + 10 * 60 * 1000);
     await user.save();
 
@@ -312,6 +314,8 @@ exports.verifyPartnerLoginOtp = async (req, res) => {
     const { user, partner, error } = await resolvePartnerAccount(rawId);
     if (error) return res.status(error.code).json({ success: false, message: error.message });
 
+    if (tooManyCodeAttempts(user)) return res.status(429).json({ success: false, message: TOO_MANY_ATTEMPTS });
+
     const now = new Date();
     const validLoginOtp =
       user.loginOtp &&
@@ -320,10 +324,12 @@ exports.verifyPartnerLoginOtp = async (req, res) => {
       user.loginOtpExpires >= now;
 
     if (!validLoginOtp) {
-      return res.status(400).json({ success: false, message: 'Invalid or expired OTP. Please try again.' });
+      const left = await recordWrongCode(user);
+      return res.status(left > 0 ? 400 : 429).json({ success: false, message: wrongCodeMessage(left, 'Invalid or expired OTP.') });
     }
 
     user.isVerified = true;
+    user.codeFailedAttempts = 0;
     user.loginOtp = undefined;
     user.loginOtpExpires = undefined;
     await user.save();
@@ -1112,7 +1118,7 @@ const MAX_DELIVERY_OTP_ATTEMPTS = 5;
 const checkDeliveryOtp = async (order, otp) => {
   if (order.status === 'delivered') return null; // retries stay idempotent
   if (!order.deliveryOtp) {
-    order.deliveryOtp = Math.floor(1000 + Math.random() * 9000).toString();
+    order.deliveryOtp = require('crypto').randomInt(1000, 10000).toString();
     await order.save();
     return { status: 400, message: 'Ask the customer for the delivery OTP shown in their app' };
   }
