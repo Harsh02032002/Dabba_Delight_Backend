@@ -15,6 +15,8 @@ router.post('/change-password', auth, c.changePassword);
 router.get('/me', auth, c.getProfile);
 router.get('/profile', auth, c.getProfile);
 router.put('/profile', auth, c.updateProfile);
+router.delete('/account', auth, c.deleteAccount);
+router.post('/account/delete', auth, c.deleteAccount);
 router.post('/profile/avatar', auth, ...s3Upload('avatar', 'avatars'), c.updateAvatar);
 router.post('/profile/banner', auth, ...s3Upload('banner', 'banners'), c.updateBanner);
 
