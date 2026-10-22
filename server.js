@@ -524,15 +524,20 @@ connectDB();
 // ─── Brute-force protection on sign-in, OTP and password reset ──────────────
 // Behind the production reverse proxy the client IP is in X-Forwarded-For; TRUST_PROXY=0 turns this off.
 app.set('trust proxy', process.env.TRUST_PROXY !== undefined ? Number(process.env.TRUST_PROXY) : 1);
-const rateLimit = require('express-rate-limit');
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  limit: Number(process.env.AUTH_RATE_LIMIT) || 30,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  skip: () => process.env.NODE_ENV === 'test',
-  message: { success: false, message: 'Too many attempts. Please wait a few minutes and try again.' },
-});
+let authLimiter = (req, res, next) => next();
+try {
+  const rateLimit = require('express-rate-limit');
+  authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: Number(process.env.AUTH_RATE_LIMIT) || 30,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    skip: () => process.env.NODE_ENV === 'test',
+    message: { success: false, message: 'Too many attempts. Please wait a few minutes and try again.' },
+  });
+} catch (e) {
+  console.warn('⚠️ [Server] express-rate-limit not installed yet. Run npm install to enable brute-force protection.');
+}
 const AUTH_LIMITED = ['/login', '/register', '/send-login-otp', '/verify-login-otp', '/verify-email', '/forgot-password', '/reset-password', '/resend-verification', '/change-password'];
 for (const base of ['/api/auth', '/auth']) app.use(AUTH_LIMITED.map((p) => base + p), authLimiter);
 for (const base of ['/api/partner', '/partner']) app.use(['/login', '/register', '/send-login-otp', '/verify-login-otp'].map((p) => base + p), authLimiter);
