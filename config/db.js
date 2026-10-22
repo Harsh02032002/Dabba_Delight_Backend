@@ -38,6 +38,8 @@ function sanitizeMongoUri(rawUri) {
     if (colonIndex !== -1) {
       let username = userinfo.slice(0, colonIndex);
       let password = userinfo.slice(colonIndex + 1);
+      // Collapse accidental double percent signs (e.g. %%40 -> %40)
+      password = password.replace(/%+/g, '%');
 
       // If password contains literal '@', encode it as %40
       password = password.replace(/@/g, '%40');
