@@ -1229,6 +1229,94 @@ exports.updateDeliveryStatus = async (req, res) => {
   }
 };
 
+
+exports.sendDeliveryOTP = async (req, res) => {
+  try {
+    const orderId = req.params.orderId || req.body?.orderId;
+    if (!orderId) return res.status(400).json({ success: false, message: 'Order ID is required' });
+
+    const partner = await getPartnerForUser(req.user);
+    if (!partner) return res.status(404).json({ success: false, message: 'Delivery partner profile not found' });
+
+    const order = await Order.findById(orderId).populate('userId', 'name email phone');
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (String(order.deliveryPartnerId) !== String(partner._id)) {
+      return res.status(403).json({ success: false, message: 'This order is not assigned to you' });
+    }
+    if (order.status === 'delivered') {
+      return res.status(400).json({ success: false, message: 'Order is already marked as delivered' });
+    }
+
+    if (!order.deliveryOtp) {
+      order.deliveryOtp = require('crypto').randomInt(1000, 10000).toString();
+      await order.save();
+    }
+
+    const customer = order.userId;
+    const customerEmail = customer?.email;
+    const customerName = customer?.name || 'Valued Customer';
+
+    let emailSent = false;
+    if (customerEmail) {
+      try {
+        const { sendEmail } = require('../utils/email.service');
+        const html = '<div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 24px; border: 1px solid #E5E7EB; border-radius: 12px; background-color: #ffffff;">' +
+          '<div style="text-align: center; margin-bottom: 20px;">' +
+          '<h1 style="color: #FF6B00; margin: 0; font-size: 26px;">Dabba Nation</h1>' +
+          '<p style="color: #6B7280; font-size: 13px; margin: 4px 0 0;">Food Delivery OTP Verification</p>' +
+          '</div>' +
+          '<p style="font-size: 15px; color: #111827;">Hello <b>' + customerName + '</b>,</p>' +
+          '<p style="font-size: 14px; color: #4B5563; line-height: 1.5;">' +
+          'Your delivery partner <b>' + (partner.name || 'Rider') + '</b> has arrived with your order <b>#' + order.orderNumber + '</b>.' +
+          '</p>' +
+          '<div style="background-color: #FFF4EC; border: 2px dashed #FF6B00; border-radius: 10px; padding: 18px; text-align: center; margin: 24px 0;">' +
+          '<p style="font-size: 12px; color: #9A3412; margin: 0 0 6px 0; text-transform: uppercase; font-weight: bold; letter-spacing: 1.5px;">Delivery Verification Code</p>' +
+          '<div style="font-size: 36px; font-weight: 900; letter-spacing: 8px; color: #FF6B00;">' + order.deliveryOtp + '</div>' +
+          '</div>' +
+          '<p style="font-size: 13px; color: #9CA3AF; text-align: center; margin-top: 15px;">' +
+          'Share this 4-digit code with your rider only upon receiving your food.' +
+          '</p>' +
+          '</div>';
+
+        await sendEmail(customerEmail, 'Your Delivery OTP: ' + order.deliveryOtp + ' for Order #' + order.orderNumber, html);
+        emailSent = true;
+      } catch (mailErr) {
+        console.warn('Failed to send delivery OTP email:', mailErr.message);
+      }
+    }
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to('order_' + order._id).emit('delivery_otp_sent', {
+        orderId: order._id,
+        orderNumber: order.orderNumber,
+        otp: order.deliveryOtp,
+      });
+      if (order.userId?._id) {
+        io.to('user_' + order.userId._id).emit('delivery_otp_sent', {
+          orderId: order._id,
+          orderNumber: order.orderNumber,
+          otp: order.deliveryOtp,
+        });
+      }
+    }
+
+    const maskedEmail = customerEmail
+      ? customerEmail.replace(/(.{2})(.*)(?=@)/, (_, g1, g2) => g1 + '*'.repeat(Math.max(g2.length, 3)))
+      : null;
+
+    res.json({
+      success: true,
+      message: customerEmail ? 'OTP sent to customer email (' + maskedEmail + ')' : 'OTP generated for customer',
+      maskedEmail,
+      emailSent,
+    });
+  } catch (error) {
+    console.error('sendDeliveryOTP error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 exports.confirmDeliveryOTP = async (req, res) => {
   try {
     const orderId = req.params.orderId || req.body.orderId;
@@ -1245,6 +1333,12 @@ exports.confirmDeliveryOTP = async (req, res) => {
       return res.status(403).json({ success: false, message: 'This order is not assigned to you' });
     }
 
+    if (order.deliveryStatus !== 'picked_up' && order.status !== 'out_for_delivery') {
+      order.deliveryStatus = 'picked_up';
+      order.status = 'out_for_delivery';
+      if (!order.pickedUpAt) order.pickedUpAt = new Date();
+      await order.save();
+    }
     const otpError = await checkDeliveryOtp(order, otp);
     if (otpError) return res.status(otpError.status).json({ success: false, message: otpError.message });
 

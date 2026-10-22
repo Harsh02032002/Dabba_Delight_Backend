@@ -51,6 +51,12 @@ router.patch('/orders/:orderId/status', dc.updateDeliveryStatus);
 router.post('/confirm-delivery', dc.confirmDeliveryOTP);
 router.post('/order/confirm-delivery', dc.confirmDeliveryOTP);
 router.post('/orders/:orderId/confirm-delivery', dc.confirmDeliveryOTP);
+router.post('/send-delivery-otp', dc.sendDeliveryOTP);
+router.post('/order/send-delivery-otp', dc.sendDeliveryOTP);
+router.post('/orders/:orderId/send-delivery-otp', dc.sendDeliveryOTP);
+router.post('/send-otp', dc.sendDeliveryOTP);
+router.post('/order/send-otp', dc.sendDeliveryOTP);
+router.post('/orders/:orderId/send-otp', dc.sendDeliveryOTP);
 
 // Device Push Token Registration for Riders (FCM / Expo)
 router.post('/push-token', async (req, res) => {

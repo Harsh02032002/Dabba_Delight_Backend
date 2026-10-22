@@ -42,6 +42,9 @@ router.patch('/orders/:orderId/status', auth, dc.updateDeliveryStatus);
 router.put('/order/status-update', auth, dc.updateDeliveryStatus);
 router.post('/order/confirm-delivery', auth, dc.confirmDeliveryOTP);
 router.post('/orders/:orderId/confirm-delivery', auth, dc.confirmDeliveryOTP);
+router.post('/orders/:orderId/send-delivery-otp', auth, dc.sendDeliveryOTP);
+router.post('/orders/:orderId/send-otp', auth, dc.sendDeliveryOTP);
+router.post('/order/send-delivery-otp', auth, dc.sendDeliveryOTP);
 router.get('/partner/location/:partnerId', dc.getPartnerLocation);
 router.get('/orders/active', auth, dc.getActiveOrders);
 

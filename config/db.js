@@ -1,14 +1,17 @@
 const mongoose = require('mongoose');
-const dns =require("dns");
-// If Node is using a local resolver (127.0.0.1) that is not responding,
-// SRV lookups (used by mongodb+srv) will fail with ECONNREFUSED.
-// Fall back to public DNS servers so the driver can resolve Atlas SRV records.
-const currentServers = dns.getServers();
-if (currentServers && currentServers.includes("127.0.0.1")) {
-  console.warn(
-    "Local DNS server 127.0.0.1 detected — switching to public DNS for SRV lookups",
-  );
-  dns.setServers(["8.8.8.8", "8.8.4.4"]);
+const dns = require('dns');
+
+// If Node is using a local router DNS that does not support SRV lookups,
+// mongodb+srv fails with querySrv ECONNREFUSED.
+// Prepend public DNS resolvers (8.8.8.8, 1.1.1.1) so Atlas SRV lookups succeed reliably.
+try {
+  const currentServers = dns.getServers();
+  const hasPublic = currentServers && currentServers.some(s => s === '8.8.8.8' || s === '1.1.1.1');
+  if (!hasPublic) {
+    dns.setServers(['8.8.8.8', '1.1.1.1', ...(currentServers || [])]);
+  }
+} catch (e) {
+  // Ignore DNS config failure if restricted in environment
 }
 
 const connectDB = async () => {
@@ -22,7 +25,7 @@ const connectDB = async () => {
     // Optimized connection options for better performance
     const conn = await mongoose.connect(mongoUri, {
       maxPoolSize: 20,              // Connection pool for concurrent requests
-      serverSelectionTimeoutMS: 5000,  // Timeout for server selection
+      serverSelectionTimeoutMS: 8000,  // Timeout for server selection
       socketTimeoutMS: 45000,       // Socket timeout
       connectTimeoutMS: 10000,      // Connection timeout
       minPoolSize: 5,               // Minimum connections in pool
@@ -48,12 +51,11 @@ const connectDB = async () => {
     mongoose.connection.on('reconnected', () => {
       console.log('✅ MongoDB reconnected');
     });
-    
-  } catch (err) {
-    console.error('❌ MongoDB connection error:', err.message);
-    console.error('Full error:', err);
-    // Don't exit, let server start without DB for now
-    console.log('⚠️  Starting server without database...');
+
+    return conn;
+  } catch (error) {
+    console.error(`❌ MongoDB connection failed: ${error.message}`);
+    throw error;
   }
 };
 
