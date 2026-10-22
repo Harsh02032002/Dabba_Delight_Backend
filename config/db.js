@@ -14,11 +14,63 @@ try {
   // Ignore DNS config failure if restricted in environment
 }
 
+/**
+ * Sanitizes and repairs common MONGO_URI formatting errors:
+ * - Strips surrounding quotes
+ * - Automatically percent-encodes literal '@' in password to '%40'
+ * - Repairs malformed percent-encoding (e.g. '%' not followed by 2 hex digits)
+ */
+function sanitizeMongoUri(rawUri) {
+  if (!rawUri || typeof rawUri !== 'string') return rawUri;
+  let uri = rawUri.trim();
+  if ((uri.startsWith('"') && uri.endsWith('"')) || (uri.startsWith("'") && uri.endsWith("'"))) {
+    uri = uri.slice(1, -1).trim();
+  }
+
+  const protocolIndex = uri.indexOf('://');
+  const lastAtIndex = uri.lastIndexOf('@');
+  if (protocolIndex !== -1 && lastAtIndex > protocolIndex) {
+    const prefix = uri.slice(0, protocolIndex + 3);
+    const userinfo = uri.slice(protocolIndex + 3, lastAtIndex);
+    const suffix = uri.slice(lastAtIndex);
+    
+    const colonIndex = userinfo.indexOf(':');
+    if (colonIndex !== -1) {
+      let username = userinfo.slice(0, colonIndex);
+      let password = userinfo.slice(colonIndex + 1);
+
+      // If password contains literal '@', encode it as %40
+      password = password.replace(/@/g, '%40');
+
+      // Fix any invalid % encoding in username or password
+      // (a % not followed by two hex digits is replaced with %25)
+      const fixEncoding = (str) => str.replace(/%(?![0-9a-fA-F]{2})/g, '%25');
+
+      try {
+        decodeURIComponent(username);
+      } catch (_) {
+        username = fixEncoding(username);
+      }
+
+      try {
+        decodeURIComponent(password);
+      } catch (_) {
+        password = fixEncoding(password);
+      }
+
+      return `${prefix}${username}:${password}${suffix}`;
+    }
+  }
+  return uri;
+}
+
 const connectDB = async () => {
   try {
     // Check if MONGO_URI is defined
-    const mongoUri = process.env.MONGO_URI;
-    if (!mongoUri) throw new Error('MONGO_URI is not set');
+    const rawUri = process.env.MONGO_URI;
+    if (!rawUri) throw new Error('MONGO_URI is not set');
+
+    const mongoUri = sanitizeMongoUri(rawUri);
 
     console.log('🔗 Connecting to MongoDB...');
     
