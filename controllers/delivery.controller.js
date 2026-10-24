@@ -1122,7 +1122,7 @@ const checkDeliveryOtp = async (order, otp) => {
   if (order.status === 'delivered') return null; // retries stay idempotent
   if (!order.deliveryOtp) {
     order.deliveryOtp = require('crypto').randomInt(1000, 10000).toString();
-    await order.save();
+    await Order.updateOne({ _id: order._id }, { $set: { deliveryOtp: order.deliveryOtp, deliveryOtpAttempts: 0 } });
     return { status: 400, message: 'Ask the customer for the delivery OTP shown in their app' };
   }
   if ((order.deliveryOtpAttempts || 0) >= MAX_DELIVERY_OTP_ATTEMPTS) {
@@ -1252,7 +1252,7 @@ exports.sendDeliveryOTP = async (req, res) => {
 
     if (!order.deliveryOtp) {
       order.deliveryOtp = require('crypto').randomInt(1000, 10000).toString();
-      await order.save();
+      await Order.updateOne({ _id: order._id }, { $set: { deliveryOtp: order.deliveryOtp, deliveryOtpAttempts: 0 } });
     }
 
     const customer = order.userId;
