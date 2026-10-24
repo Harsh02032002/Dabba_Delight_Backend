@@ -549,6 +549,7 @@ app.use('/api/user', require('./routes/user.routes'));
 app.use('/api/user/orders', require('./routes/order.routes'));
 app.use('/api/orders', require('./routes/order.routes'));
 app.use('/api/user/wishlist', require('./routes/wishlist.routes'));
+app.use('/api/user/cart', require('./routes/cart.routes'));
 app.use('/api/user/notifications', require('./routes/notification.routes'));
 app.use('/api/search', require('./routes/search.routes'));
 app.use('/api/products', require('./routes/product.routes'));

@@ -372,6 +372,49 @@ test('step 4: customer registers, verifies and signs in with a separate role', a
   assert.equal(asSeller.status, 403);
 });
 
+test('cart is stored per account, so website and app see the same cart', async () => {
+  assert.equal((await api('GET', '/user/cart')).status, 401);
+  const empty = await api('GET', '/user/cart', { token: state.customer.token });
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.body.data.items, []);
+
+  // "Website" saves a cart (duplicates merge, junk lines are dropped)
+  const saved = await api('PUT', '/user/cart', {
+    token: state.customer.token,
+    body: {
+      sellerId: state.seller.sellerId,
+      items: [
+        { menuItemId: state.items.thali, quantity: 2 },
+        { menuItemId: state.items.thali, quantity: 1 },
+        { menuItemId: state.items.kheer, quantity: 1, selectedSize: 'half' },
+        { menuItemId: 'not-an-id', quantity: 1 },
+        { menuItemId: state.items.paratha, quantity: 0 },
+      ],
+    },
+  });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+
+  // "App" with a fresh login of the same account reads it back with product details
+  const appLogin = await api('POST', '/auth/login', { body: { email: 'aarav@e2e.test', password: PASSWORD, role: 'user' } });
+  const fromApp = await api('GET', '/user/cart', { token: appLogin.body.token });
+  const cart = fromApp.body.data;
+  assert.equal(String(cart.sellerId), state.seller.sellerId);
+  assert.ok(cart.sellerName);
+  assert.deepEqual(
+    cart.items.map(i => [String(i.menuItem._id), i.quantity, i.selectedSize]),
+    [[state.items.thali, 3, null], [state.items.kheer, 1, 'half']],
+  );
+  assert.equal(cart.items[0].menuItem.name, 'Rajma Chawal Thali');
+
+  // Another customer never sees it; clearing from one device clears it everywhere
+  const other = await registerVerifyLogin({ name: 'Cart Stranger', email: 'cart-stranger@e2e.test', phone: '+91 98765 00077' });
+  assert.deepEqual((await api('GET', '/user/cart', { token: other.token })).body.data.items, []);
+  await api('PUT', '/user/cart', { token: appLogin.body.token, body: { sellerId: null, items: [] } });
+  const cleared = await api('GET', '/user/cart', { token: state.customer.token });
+  assert.deepEqual(cleared.body.data.items, []);
+  assert.equal(cleared.body.data.sellerId, null);
+});
+
 // ── Steps 5 & 6: discovery and menus on both platforms ─────────────────────
 test('steps 5-6: website and app return the same eligible sellers and menus (21 km rule)', async () => {
   state.outside = await registerSellerAt(2, JUST_OUTSIDE);

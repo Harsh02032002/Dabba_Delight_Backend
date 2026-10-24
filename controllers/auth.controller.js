@@ -642,7 +642,7 @@ exports.deleteAccount = async (req, res) => {
     }
     const Order = require('../models/Order');
     const Seller = require('../models/Seller');
-    const { Address, Wishlist, Notification, NotificationPreference, DeliveryPartner } = require('../models/Others');
+    const { Address, Wishlist, Cart, Notification, NotificationPreference, DeliveryPartner } = require('../models/Others');
     const user = req.user;
 
     const seller = await Seller.findOne({ userId: user._id });
@@ -664,6 +664,7 @@ exports.deleteAccount = async (req, res) => {
     await Promise.all([
       Address.deleteMany({ userId: user._id }).catch(() => {}),
       Wishlist.deleteMany({ userId: user._id }).catch(() => {}),
+      Cart.deleteMany({ userId: user._id }).catch(() => {}),
       Notification.deleteMany({ userId: user._id }).catch(() => {}),
       NotificationPreference.deleteMany({ userId: user._id }).catch(() => {}),
     ]);

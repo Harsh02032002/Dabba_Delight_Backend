@@ -62,6 +62,29 @@ const wishlistSchema = new mongoose.Schema(
 wishlistSchema.index({ userId: 1, productId: 1 }, { unique: true });
 const Wishlist = mongoose.model("Wishlist", wishlistSchema);
 
+// ─── Cart (one per user, shared by web + app) ───
+const cartSchema = new mongoose.Schema(
+  {
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      unique: true,
+    },
+    sellerId: { type: mongoose.Schema.Types.ObjectId, ref: "Seller", default: null },
+    items: [
+      {
+        _id: false,
+        menuItemId: { type: mongoose.Schema.Types.ObjectId, ref: "Product", required: true },
+        quantity: { type: Number, required: true, min: 1 },
+        selectedSize: { type: String, enum: ["half", "full", null], default: null },
+      },
+    ],
+  },
+  { timestamps: true },
+);
+const Cart = mongoose.model("Cart", cartSchema);
+
 // ─── Address ────────────────────────────────────
 const addressSchema = new mongoose.Schema(
   {
@@ -985,6 +1008,7 @@ const Banner = mongoose.model("Banner", bannerSchema);
 module.exports = {
   Invoice,
   Wishlist,
+  Cart,
   Address,
   Settlement,
   Referral,
