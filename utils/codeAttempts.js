@@ -28,7 +28,13 @@ const wrongCodeMessage = (left, base = 'Invalid or expired code.') =>
 const isMockOtp = (code) => {
   const c = String(code || '').trim();
   if (!c) return false;
-  return c === '999999' || c === '123456' || (process.env.MOCK_LOGIN_OTP && c === String(process.env.MOCK_LOGIN_OTP).trim());
+  // Supports 4-digit and 6-digit mock codes (for auth login and delivery verification)
+  if (c === '9999' || c === '999999' || c === '1234' || c === '123456') return true;
+  if (process.env.MOCK_LOGIN_OTP) {
+    const envMock = String(process.env.MOCK_LOGIN_OTP).trim();
+    if (c === envMock || c === envMock.slice(0, 4)) return true;
+  }
+  return false;
 };
 
 module.exports = { MAX_CODE_ATTEMPTS, TOO_MANY_ATTEMPTS, tooManyCodeAttempts, recordWrongCode, wrongCodeMessage, isMockOtp };
