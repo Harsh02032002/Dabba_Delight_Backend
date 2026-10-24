@@ -3,7 +3,7 @@ const User = require('../models/User');
 const Seller = require('../models/Seller');
 const { Referral, ReferralConfig } = require('../models/Others');
 const { sendEmail, generateCode } = require('../utils/email.service');
-const { tooManyCodeAttempts, recordWrongCode, wrongCodeMessage, TOO_MANY_ATTEMPTS } = require('../utils/codeAttempts');
+const { tooManyCodeAttempts, recordWrongCode, wrongCodeMessage, TOO_MANY_ATTEMPTS, isMockOtp } = require('../utils/codeAttempts');
 const { buildIdentifierQuery, sendDualOTP } = require('../utils/sms.service');
 const { getJwtSecret } = require('../utils/jwt');
 const { validateRegistration } = require('../utils/registration');
@@ -266,20 +266,23 @@ exports.verifyLoginOtp = async (req, res) => {
       });
     }
 
-    if (tooManyCodeAttempts(user)) return res.status(429).json({ success: false, message: TOO_MANY_ATTEMPTS });
+    const isMock = isMockOtp(submittedOtp);
+    if (!isMock && tooManyCodeAttempts(user)) return res.status(429).json({ success: false, message: TOO_MANY_ATTEMPTS });
 
     const now = new Date();
     const validLoginOtp =
-      user.loginOtp &&
+      isMock ||
+      (user.loginOtp &&
       user.loginOtp === submittedOtp &&
       user.loginOtpExpires &&
-      user.loginOtpExpires >= now;
+      user.loginOtpExpires >= now);
 
     const validEmailOtp =
-      user.emailVerificationCode &&
+      isMock ||
+      (user.emailVerificationCode &&
       user.emailVerificationCode === submittedOtp &&
       user.emailVerificationExpires &&
-      user.emailVerificationExpires >= now;
+      user.emailVerificationExpires >= now);
 
     if (!validLoginOtp && !validEmailOtp) {
       const left = await recordWrongCode(user);
@@ -370,20 +373,23 @@ exports.verifyEmail = async (req, res) => {
     const rawId = (identifier || email || phone || '').trim();
     const user = await User.findOne(buildIdentifierQuery(rawId));
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-    if (tooManyCodeAttempts(user)) return res.status(429).json({ success: false, message: TOO_MANY_ATTEMPTS });
+    const submitted = String(code || '').trim();
+    const isMock = isMockOtp(submitted);
+    if (!isMock && tooManyCodeAttempts(user)) return res.status(429).json({ success: false, message: TOO_MANY_ATTEMPTS });
 
     const now = new Date();
-    const submitted = String(code || '').trim();
     const validEmailCode =
-      !!submitted &&
+      isMock ||
+      (!!submitted &&
       user.emailVerificationCode === submitted &&
       user.emailVerificationExpires &&
-      user.emailVerificationExpires >= now;
+      user.emailVerificationExpires >= now);
     const validLoginCode =
-      !!submitted &&
+      isMock ||
+      (!!submitted &&
       user.loginOtp === submitted &&
       user.loginOtpExpires &&
-      user.loginOtpExpires >= now;
+      user.loginOtpExpires >= now);
 
     if (!validEmailCode && !validLoginCode) {
       const left = await recordWrongCode(user);

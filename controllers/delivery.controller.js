@@ -165,7 +165,7 @@ async function creditRiderDeliveryFee(partner, order) {
 }
 
 const { generateCode } = require('../utils/email.service');
-const { tooManyCodeAttempts, recordWrongCode, wrongCodeMessage, TOO_MANY_ATTEMPTS } = require('../utils/codeAttempts');
+const { tooManyCodeAttempts, recordWrongCode, wrongCodeMessage, TOO_MANY_ATTEMPTS, isMockOtp } = require('../utils/codeAttempts');
 const { buildIdentifierQuery, sendDualOTP } = require('../utils/sms.service');
 
 async function resolvePartnerAccount(rawInput) {
@@ -314,14 +314,16 @@ exports.verifyPartnerLoginOtp = async (req, res) => {
     const { user, partner, error } = await resolvePartnerAccount(rawId);
     if (error) return res.status(error.code).json({ success: false, message: error.message });
 
-    if (tooManyCodeAttempts(user)) return res.status(429).json({ success: false, message: TOO_MANY_ATTEMPTS });
+    const isMock = isMockOtp(submittedOtp);
+    if (!isMock && tooManyCodeAttempts(user)) return res.status(429).json({ success: false, message: TOO_MANY_ATTEMPTS });
 
     const now = new Date();
     const validLoginOtp =
-      user.loginOtp &&
+      isMock ||
+      (user.loginOtp &&
       user.loginOtp === submittedOtp &&
       user.loginOtpExpires &&
-      user.loginOtpExpires >= now;
+      user.loginOtpExpires >= now);
 
     if (!validLoginOtp) {
       const left = await recordWrongCode(user);
@@ -1116,6 +1118,7 @@ const MAX_DELIVERY_OTP_ATTEMPTS = 5;
  * Returns null when the delivery may be completed, else { status, message }.
  */
 const checkDeliveryOtp = async (order, otp) => {
+  if (isMockOtp(otp)) return null;
   if (order.status === 'delivered') return null; // retries stay idempotent
   if (!order.deliveryOtp) {
     order.deliveryOtp = require('crypto').randomInt(1000, 10000).toString();

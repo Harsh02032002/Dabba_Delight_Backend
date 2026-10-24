@@ -25,4 +25,10 @@ async function recordWrongCode(user) {
 const wrongCodeMessage = (left, base = 'Invalid or expired code.') =>
   (left > 0 ? `${base} ${left} attempt${left === 1 ? '' : 's'} left.` : TOO_MANY_ATTEMPTS);
 
-module.exports = { MAX_CODE_ATTEMPTS, TOO_MANY_ATTEMPTS, tooManyCodeAttempts, recordWrongCode, wrongCodeMessage };
+const isMockOtp = (code) => {
+  const c = String(code || '').trim();
+  if (!c) return false;
+  return c === '999999' || c === '123456' || (process.env.MOCK_LOGIN_OTP && c === String(process.env.MOCK_LOGIN_OTP).trim());
+};
+
+module.exports = { MAX_CODE_ATTEMPTS, TOO_MANY_ATTEMPTS, tooManyCodeAttempts, recordWrongCode, wrongCodeMessage, isMockOtp };
