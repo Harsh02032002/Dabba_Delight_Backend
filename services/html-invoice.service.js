@@ -75,7 +75,7 @@ const generateInvoiceNumber = async () => {
 };
 
 const prepareOrderData = async (order, invoiceNumber) => {
-  const backendUrl = process.env.BACKEND_URL || (process.env.NODE_ENV === 'production' ? 'https://api.dabbanation.in' : 'http://localhost:5000');
+  const backendUrl = process.env.BACKEND_URL || (process.env.NODE_ENV === 'production' ? 'https://dabbanation.in' : 'http://localhost:5000');
   
   const rawGst = order.sellerId?.gstNumber;
   const rawFssai = order.sellerId?.fssaiLicense;

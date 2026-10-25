@@ -72,7 +72,7 @@ for (const k of ['RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET', 'CLOUDINARY_CLOUD_NAM
 }
 if (!process.env.FRONTEND_URL) process.env.FRONTEND_URL = 'http://localhost:8080';
 if (!process.env.BACKEND_URL) {
-  process.env.BACKEND_URL = process.env.NODE_ENV === 'production' ? 'https://api.dabbanation.in' : `http://localhost:${process.env.PORT || 5000}`;
+  process.env.BACKEND_URL = process.env.NODE_ENV === 'production' ? 'https://dabbanation.in' : `http://localhost:${process.env.PORT || 5000}`;
 }
 
 const express = require('express');
@@ -98,19 +98,6 @@ app.use(compression({
 }));
 
 // ─── Socket.IO ──────────────────────────────────────
-// ─── Socket.IO Normalization (handle /api/socket.io & /socket.io) ────
-server.prependListener('request', (req, res) => {
-  if (req.url && req.url.startsWith('/api/socket.io')) {
-    req.url = req.url.replace('/api/socket.io', '/socket.io');
-  }
-});
-server.prependListener('upgrade', (req, socket, head) => {
-  if (req.url && req.url.startsWith('/api/socket.io')) {
-    req.url = req.url.replace('/api/socket.io', '/socket.io');
-  }
-});
-
-// ─── Socket.IO ──────────────────────────────────────
 const io = new Server(server, {
   cors: { 
     origin: '*', 
@@ -121,6 +108,18 @@ const io = new Server(server, {
   pingTimeout: 30000,
   pingInterval: 25000,
 });
+
+// ─── Socket.IO Normalization (handle /api/socket.io & /socket.io) ────
+// The live site only proxies /api/* to this server, so installed apps connect on /api/socket.io.
+// Must be registered AFTER new Server(): engine.io wraps the existing 'request' listeners and checks
+// the path first, so a rewrite added earlier runs too late and the handshake falls through to a 404.
+const normalizeSocketPath = (req) => {
+  if (req.url && req.url.startsWith('/api/socket.io')) {
+    req.url = req.url.replace('/api/socket.io', '/socket.io');
+  }
+};
+server.prependListener('request', normalizeSocketPath);
+server.prependListener('upgrade', normalizeSocketPath);
 
 // Socket authentication middleware (uses same JWT_SECRET as auth/partner login)
 const { getJwtSecret } = require('./utils/jwt');
