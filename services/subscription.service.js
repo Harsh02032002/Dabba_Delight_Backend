@@ -3,9 +3,13 @@ const SubscriptionUsage = require('../models/SubscriptionUsage');
 const SubscriptionPlan = require('../models/SubscriptionPlan');
 const Order = require('../models/Order');
 
+// Seller memberships are not customer meal credit and can never pay for orders
+const CUSTOMER_SUBSCRIPTION = { $nin: ['seller', 'restaurant'] };
+
 function getActiveSubscriptionQuery(userId) {
   return {
     user_id: userId,
+    subscription_for: CUSTOMER_SUBSCRIPTION,
     status: 'active',
     remaining_amount: { $gt: 0 },
     remaining_days: { $gt: 0 },
@@ -16,6 +20,7 @@ function getActiveSubscriptionForSellerQuery(userId, sellerId) {
   return {
     user_id: userId,
     seller_id: sellerId,
+    subscription_for: CUSTOMER_SUBSCRIPTION,
     status: 'active',
     remaining_amount: { $gt: 0 },
     remaining_days: { $gt: 0 },

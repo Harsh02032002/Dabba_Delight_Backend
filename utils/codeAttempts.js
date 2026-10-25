@@ -25,16 +25,20 @@ async function recordWrongCode(user) {
 const wrongCodeMessage = (left, base = 'Invalid or expired code.') =>
   (left > 0 ? `${base} ${left} attempt${left === 1 ? '' : 's'} left.` : TOO_MANY_ATTEMPTS);
 
-const isMockOtp = (code) => {
+/**
+ * Play Store / App Store reviewer sign-in. A fixed code is accepted only when REVIEWER_OTP is set
+ * and the account's email or phone is listed in REVIEWER_ACCOUNTS (comma separated).
+ * Never for admins, and never for delivery handover OTPs.
+ */
+const normalizeId = (v) => String(v || '').trim().toLowerCase().replace(/[\s-]/g, '');
+const isReviewerOtp = (code, user) => {
+  const expected = String(process.env.REVIEWER_OTP || '').trim();
   const c = String(code || '').trim();
-  if (!c) return false;
-  // Supports 4-digit and 6-digit mock codes (for auth login and delivery verification)
-  if (c === '9999' || c === '999999' || c === '1234' || c === '123456') return true;
-  if (process.env.MOCK_LOGIN_OTP) {
-    const envMock = String(process.env.MOCK_LOGIN_OTP).trim();
-    if (c === envMock || c === envMock.slice(0, 4)) return true;
-  }
-  return false;
+  if (!expected || !c || c !== expected || !user || user.role === 'admin') return false;
+  const allowed = String(process.env.REVIEWER_ACCOUNTS || '').split(',').map(normalizeId).filter(Boolean);
+  if (!allowed.length) return false;
+  const ids = [user.email, user.phone].map(normalizeId).filter(Boolean);
+  return ids.some((id) => allowed.includes(id) || allowed.includes(id.replace(/^\+?91/, '')));
 };
 
-module.exports = { MAX_CODE_ATTEMPTS, TOO_MANY_ATTEMPTS, tooManyCodeAttempts, recordWrongCode, wrongCodeMessage, isMockOtp };
+module.exports = { MAX_CODE_ATTEMPTS, TOO_MANY_ATTEMPTS, tooManyCodeAttempts, recordWrongCode, wrongCodeMessage, isReviewerOtp };

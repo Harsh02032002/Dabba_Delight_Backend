@@ -147,6 +147,13 @@ exports.verifyRazorpayPayment = async (req, res) => {
     if (Number(rzpOrder?.amount_paid ?? rzpOrder?.amount) !== amountPaise) {
       return res.status(400).json({ success: false, message: 'Payment amount does not match this order' });
     }
+    // The Razorpay order must have been created for this order, and one payment can only pay one order
+    if (String(rzpOrder?.notes?.dnOrderId || '') !== String(order._id)) {
+      return res.status(400).json({ success: false, message: 'This payment was not made for this order' });
+    }
+    if (await Order.exists({ paymentId: razorpayPaymentId, _id: { $ne: order._id } })) {
+      return res.status(409).json({ success: false, message: 'This payment has already been used' });
+    }
 
     const updated = await Order.findOneAndUpdate(
       { _id: order._id, paymentStatus: { $ne: 'paid' } },

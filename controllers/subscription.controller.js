@@ -27,6 +27,7 @@ exports.getActiveForUser = async (req, res) => {
     // Find ALL active subscriptions
     const subscriptions = await Subscription.find({
       user_id: req.user._id,
+      subscription_for: { $nin: ['seller', 'restaurant'] },
       status: 'active',
     })
     .sort({ createdAt: -1 }) // Newest first
@@ -856,6 +857,7 @@ exports.getMySubscriptionItems = async (req, res) => {
   try {
     const subscription = await Subscription.findOne({
       user_id: req.user._id,
+      subscription_for: { $nin: ['seller', 'restaurant'] },
       status: 'active'
     }).populate('plan_id').populate('seller_id', 'businessName type logo address');
     
@@ -941,6 +943,7 @@ exports.placeOrderFromSubscription = async (req, res) => {
     // Get user's active subscription
     const subscription = await Subscription.findOne({
       user_id: req.user._id,
+      subscription_for: { $nin: ['seller', 'restaurant'] },
       status: 'active'
     }).session(session).populate('seller_id');
     
@@ -1107,23 +1110,26 @@ exports.sellerPurchaseSubscription = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Seller profile not found' });
     }
 
-    const { planId, paymentMethod = 'online', transactionId } = req.body;
-    let purchaseData = { totalAmount: 0, totalDays: 30 };
-
+    const { planId, transactionId } = req.body;
+    // Price and duration come from a stored, active plan, or the standard membership; never from the client
+    let plan = { total_amount: 2999, total_days: 30, _id: null };
     if (planId) {
-      const plan = await SubscriptionPlan.findById(planId);
-      if (!plan) return res.status(404).json({ success: false, message: 'Plan not found' });
-      purchaseData = {
-        totalAmount: plan.total_amount,
-        totalDays: plan.total_days,
-        planId: plan._id
-      };
-    } else {
-      purchaseData = {
-        totalAmount: Number(req.body.totalAmount) || 2999,
-        totalDays: Number(req.body.totalDays) || 30
-      };
+      if (!mongoose.Types.ObjectId.isValid(String(planId))) {
+        return res.status(400).json({ success: false, message: 'Please choose a plan' });
+      }
+      plan = await SubscriptionPlan.findById(planId);
+      if (!plan || !plan.is_active) return res.status(404).json({ success: false, message: 'Plan not found' });
     }
+    const ref = String(transactionId || '').trim().slice(0, 64);
+    if (!ref) return res.status(400).json({ success: false, message: 'Enter the UPI transaction ID of your payment' });
+    if (await Subscription.exists({ payment_id: ref })) {
+      return res.status(409).json({ success: false, message: 'This transaction ID has already been used' });
+    }
+    const purchaseData = {
+      totalAmount: Number(plan.total_amount),
+      totalDays: Number(plan.total_days),
+      planId: plan._id,
+    };
 
     const subscription = new Subscription({
       user_id: req.user._id,
@@ -1138,6 +1144,8 @@ exports.sellerPurchaseSubscription = async (req, res) => {
       status: 'active',
       seller_name: seller.businessName,
       seller_type: seller.type || 'restaurant',
+      paid_online: purchaseData.totalAmount,
+      payment_id: ref,
     });
     await subscription.save();
 

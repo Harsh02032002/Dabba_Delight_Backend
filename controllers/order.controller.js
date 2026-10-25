@@ -507,18 +507,22 @@ exports.cancelOrder = async (req, res) => {
 
     // ─── Refund to wallet ──────────────────────────
     try {
-      if (order.paymentStatus === 'paid' && (order.paymentMethod === 'razorpay' || order.paymentMethod === 'wallet' || order.paymentMethod === 'stripe')) {
-        const user = await User.findByIdAndUpdate(order.userId, { $inc: { wallet: order.total } }, { new: true });
+      // Money paid by wallet or any online method (Razorpay or admin-confirmed UPI) goes back to the wallet;
+      // the subscription part is restored to the subscription below
+      const paidWithMoney = order.paymentMethod !== 'cod' && order.paymentMethod !== 'subscription';
+      const refundAmount = order.subscriptionAmountUsed > 0 ? Number(order.payableAfterSubscription) || 0 : order.total;
+      if (order.paymentStatus === 'paid' && paidWithMoney && refundAmount > 0) {
+        const user = await User.findByIdAndUpdate(order.userId, { $inc: { wallet: refundAmount } }, { new: true });
         if (user) {
           await WalletTransaction.create({
-            userId: order.userId, type: 'credit', amount: order.total,
+            userId: order.userId, type: 'credit', amount: refundAmount,
             description: `Refund for cancelled order #${order.orderNumber}`,
             referenceId: order._id.toString(), referenceType: 'refund', balance: user.wallet,
           });
 
           await Notification.create({
             userId: order.userId, type: 'wallet',
-            title: 'Refund Credited', message: `₹${order.total} refunded to your wallet for order #${order.orderNumber}`,
+            title: 'Refund Credited', message: `₹${refundAmount} refunded to your wallet for order #${order.orderNumber}`,
             isRead: false
           }).catch(e => console.error('Notification error:', e));
 

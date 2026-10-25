@@ -165,7 +165,7 @@ async function creditRiderDeliveryFee(partner, order) {
 }
 
 const { generateCode } = require('../utils/email.service');
-const { tooManyCodeAttempts, recordWrongCode, wrongCodeMessage, TOO_MANY_ATTEMPTS, isMockOtp } = require('../utils/codeAttempts');
+const { tooManyCodeAttempts, recordWrongCode, wrongCodeMessage, TOO_MANY_ATTEMPTS, isReviewerOtp } = require('../utils/codeAttempts');
 const { buildIdentifierQuery, sendDualOTP } = require('../utils/sms.service');
 
 async function resolvePartnerAccount(rawInput) {
@@ -314,7 +314,7 @@ exports.verifyPartnerLoginOtp = async (req, res) => {
     const { user, partner, error } = await resolvePartnerAccount(rawId);
     if (error) return res.status(error.code).json({ success: false, message: error.message });
 
-    const isMock = isMockOtp(submittedOtp);
+    const isMock = isReviewerOtp(submittedOtp, user);
     if (!isMock && tooManyCodeAttempts(user)) return res.status(429).json({ success: false, message: TOO_MANY_ATTEMPTS });
 
     const now = new Date();
@@ -658,11 +658,18 @@ exports.pickupOrder = async (req, res) => {
   return exports.updateDeliveryStatus(req, res);
 };
 
-// PATCH /api/delivery/orders/:orderId/deliver — assigned rider only, after pickup
+// PATCH /api/delivery/orders/:orderId/deliver — assigned rider only, after pickup, with the customer's OTP
 exports.deliverOrder = async (req, res) => {
   try {
     const partner = await getPartnerForUser(req.user);
     if (!partner) return res.status(404).json({ success: false, message: 'Delivery partner profile not found' });
+    const order = await Order.findById(req.params.orderId);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (String(order.deliveryPartnerId) !== String(partner._id)) {
+      return res.status(403).json({ success: false, message: 'This order is not assigned to you' });
+    }
+    const otpError = await checkDeliveryOtp(order, req.body?.otp);
+    if (otpError) return res.status(otpError.status).json({ success: false, message: otpError.message });
     const result = await completeDelivery({ orderId: req.params.orderId, partner, io: req.app.get('io'), updatedBy: req.user._id });
     if (!result.ok) return res.status(result.code || 400).json({ success: false, message: result.message });
     res.json({ success: true, message: result.message, order: result.order });
@@ -1118,7 +1125,6 @@ const MAX_DELIVERY_OTP_ATTEMPTS = 5;
  * Returns null when the delivery may be completed, else { status, message }.
  */
 const checkDeliveryOtp = async (order, otp) => {
-  if (isMockOtp(otp)) return null;
   if (order.status === 'delivered') return null; // retries stay idempotent
   if (!order.deliveryOtp) {
     order.deliveryOtp = require('crypto').randomInt(1000, 10000).toString();

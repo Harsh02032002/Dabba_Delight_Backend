@@ -3,7 +3,7 @@ const User = require('../models/User');
 const Seller = require('../models/Seller');
 const { Referral, ReferralConfig } = require('../models/Others');
 const { sendEmail, generateCode } = require('../utils/email.service');
-const { tooManyCodeAttempts, recordWrongCode, wrongCodeMessage, TOO_MANY_ATTEMPTS, isMockOtp } = require('../utils/codeAttempts');
+const { tooManyCodeAttempts, recordWrongCode, wrongCodeMessage, TOO_MANY_ATTEMPTS, isReviewerOtp } = require('../utils/codeAttempts');
 const { buildIdentifierQuery, sendDualOTP } = require('../utils/sms.service');
 const { getJwtSecret } = require('../utils/jwt');
 const { validateRegistration } = require('../utils/registration');
@@ -266,7 +266,7 @@ exports.verifyLoginOtp = async (req, res) => {
       });
     }
 
-    const isMock = isMockOtp(submittedOtp);
+    const isMock = isReviewerOtp(submittedOtp, user);
     if (!isMock && tooManyCodeAttempts(user)) return res.status(429).json({ success: false, message: TOO_MANY_ATTEMPTS });
 
     const now = new Date();
@@ -374,7 +374,7 @@ exports.verifyEmail = async (req, res) => {
     const user = await User.findOne(buildIdentifierQuery(rawId));
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     const submitted = String(code || '').trim();
-    const isMock = isMockOtp(submitted);
+    const isMock = isReviewerOtp(submitted, user);
     if (!isMock && tooManyCodeAttempts(user)) return res.status(429).json({ success: false, message: TOO_MANY_ATTEMPTS });
 
     const now = new Date();

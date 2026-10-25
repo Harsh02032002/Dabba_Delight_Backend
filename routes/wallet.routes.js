@@ -31,21 +31,4 @@ router.get('/seller/my-wallet', auth, sellerAuth, async (req, res) => {
   return walletController.getSellerWallet(req, res);
 });
 
-// ============= WEBHOOK ROUTES (For Razorpay callbacks) =============
-
-// Payout status webhook
-router.post('/webhooks/payout', async (req, res) => {
-  try {
-    const { payload } = req.body;
-    
-    // Verify webhook signature here
-    // Update payout status in database
-    
-    res.json({ success: true });
-  } catch (error) {
-    console.error('Webhook error:', error);
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
 module.exports = router;

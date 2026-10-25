@@ -540,7 +540,8 @@ try {
 }
 const AUTH_LIMITED = ['/login', '/register', '/send-login-otp', '/verify-login-otp', '/verify-email', '/forgot-password', '/reset-password', '/resend-verification', '/change-password'];
 for (const base of ['/api/auth', '/auth']) app.use(AUTH_LIMITED.map((p) => base + p), authLimiter);
-for (const base of ['/api/partner', '/partner']) app.use(['/login', '/register', '/send-login-otp', '/verify-login-otp'].map((p) => base + p), authLimiter);
+// Rider auth is mounted under several prefixes; every one of them is throttled
+for (const base of ['/api/partner', '/partner', '/api/delivery', '/api/order']) app.use(['/login', '/register', '/send-login-otp', '/verify-login-otp'].map((p) => base + p), authLimiter);
 
 app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/auth', require('./routes/auth.routes'));
